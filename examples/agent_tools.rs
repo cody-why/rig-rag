@@ -1,7 +1,9 @@
 use anyhow::Result;
+#[allow(unused_imports)]
 use rig::{
     completion::{Prompt, ToolDefinition},
     providers,
+    streaming::{StreamingPrompt, stream_to_stdout},
     tool::Tool,
 };
 use serde::{Deserialize, Serialize};
@@ -110,7 +112,7 @@ async fn main() -> Result<(), anyhow::Error> {
     let openai_client = providers::openai::Client::from_url(&openai_api_key, &base_url);
 
     // Create agent with a single context prompt and two tools
-    let calculator_agent = openai_client
+    let agent = openai_client
         .agent(model_name.as_str())
         .preamble("You are a calculator here to help the user perform arithmetic operations. Use the tools provided to answer the user's question.")
         .max_tokens(1024)
@@ -120,7 +122,8 @@ async fn main() -> Result<(), anyhow::Error> {
 
     // Prompt the agent and print the response
     println!("Calculate 2 - 5");
-    println!("OpenAI Calculator Agent: {}", calculator_agent.prompt("Calculate 2 - 5").await?);
-
+    // println!("Agent: {}", agent.prompt("Calculate 2 - 5").await?);
+    let mut stream = agent.stream_prompt("Calculate 2 - 5").await?;
+    stream_to_stdout(agent, &mut stream).await?;
     Ok(())
 }

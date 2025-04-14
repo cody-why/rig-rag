@@ -5,21 +5,30 @@ edition = "2024"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
-rig-core = { version = "0.10", features = ["all","mcp"], git="https://github.com/0xPlaygrounds/rig" }
+rig-core = { version = "0.11", features = ["all","mcp"], git="https://github.com/0xPlaygrounds/rig" }
 
 dotenv = "0.15"
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 futures-util = "0.3"
+nanoid = "0.4"
 
+
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+# Web
+axum = "0.8"
+tower-http = { version = "0.6", features = ["cors", "limit"] }
+tower = "0.5"
+
+mini-moka = "0.10"
+
+
+
+[dev-dependencies]
 # MCP
 mcp-core = { version = "0.1", features = ["sse"] }
 mcp-core-macros = "0.1"
 schemars = "0.8"
 serde_json = "1"
-
-tracing = "0.1"
-tracing-subscriber = "0.3"
-
-
-

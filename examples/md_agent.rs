@@ -1,9 +1,8 @@
 use anyhow::{Context, Result};
 use rig::{
-    Embed, embeddings::EmbeddingsBuilder, loaders::FileLoader, providers::openai,
-    vector_store::in_memory_store::InMemoryVectorStore,
+    Embed, cli_chatbot::cli_chatbot, embeddings::EmbeddingsBuilder, loaders::FileLoader,
+    providers::openai, vector_store::in_memory_store::InMemoryVectorStore,
 };
-use rig_demo::cli_chatbot::*;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tracing::{info, warn};
@@ -157,7 +156,7 @@ async fn main() -> Result<()> {
     info!("Starting CLI chatbot...");
 
     // 启动交互式 CLI
-    if let Err(e) = cli_chatbot(&rag_agent).await {
+    if let Err(e) = cli_chatbot(rag_agent).await {
         warn!("Error in CLI chatbot: {}", e);
     }
 
