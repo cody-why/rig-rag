@@ -1,34 +1,39 @@
 [package]
-name = "rig-demo"
+name = "rig-rag"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
-rig-core = { version = "0.11", features = ["all","mcp"], git="https://github.com/0xPlaygrounds/rig" }
+# git="https://github.com/0xPlaygrounds/rig"
+rig-core = { version = "0.21", features = ["derive"] }
+rig-derive = "0.1"
+rig-lancedb = "0.2"
 
+lancedb = "0.21"
+arrow-array = "55.2"
+
+
+chrono = { version = "0.4", features = ["serde"] }
 dotenv = "0.15"
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
-futures-util = "0.3"
+serde_json = "1"
 nanoid = "0.4"
 
-
 tracing = "0.1"
-tracing-subscriber = "0.3"
+tracing-subscriber = { version = "0.3", features = ["time"] }
+time = { version = "0.3" }
 
 # Web
-axum = "0.8"
+axum = { version = "0.8", features = ["multipart"] }
 tower-http = { version = "0.6", features = ["cors", "limit"] }
 tower = "0.5"
 
 mini-moka = "0.10"
-
+futures = "0.3.31"
 
 
 [dev-dependencies]
-# MCP
-mcp-core = { version = "0.1", features = ["sse"] }
-mcp-core-macros = "0.1"
-schemars = "0.8"
-serde_json = "1"
+
+

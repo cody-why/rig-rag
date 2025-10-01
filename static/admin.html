@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>文档管理 - AI助手</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 10px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 10px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 2rem;
+            margin-bottom: 5px;
+        }
+
+        .header p {
+            opacity: 0.9;
+            font-size: 1rem;
+        }
+
+        .nav {
+            display: flex;
+            background: #f8f9fa;
+            border-bottom: 1px solid #e9ecef;
+        }
+
+        .nav-item {
+            flex: 1;
+            padding: 12px 20px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            background: none;
+            border: none;
+            font-size: 1rem;
+            color: #495057;
+        }
+
+        .nav-item:hover {
+            background: #e9ecef;
+        }
+
+        .nav-item.active {
+            background: #667eea;
+            color: white;
+        }
+
+        .content {
+            padding: 20px;
+        }
+
+        .section {
+            display: none;
+        }
+
+        .section.active {
+            display: block;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: #495057;
+        }
+
+        .form-control {
+            width: 100%;
+            padding: 12px 16px;
+            border: 2px solid #e9ecef;
+            border-radius: 10px;
+            font-size: 1rem;
+            transition: border-color 0.3s ease;
+        }
+
+        .form-control:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        textarea.form-control {
+            resize: vertical;
+            min-height: 150px;
+        }
+
+        .btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 10px;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            margin-right: 10px;
+            margin-bottom: 10px;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.3);
+        }
+
+        .btn-secondary {
+            background: #6c757d;
+            color: white;
+        }
+
+        .btn-danger {
+            background: #dc3545;
+            color: white;
+        }
+        
+        .btn-danger:hover {
+            background: #c82333;
+            transform: translateY(-1px);
+        }
+
+        .btn-success {
+            background: #28a745;
+            color: white;
+        }
+
+        .document-list {
+            margin-top: 30px;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+        }
+
+        .document-item {
+            background: #f8f9fa;
+            border-radius: 10px;
+            padding: 20px;
+            border-left: 4px solid #667eea;
+            display: flex;
+            flex-direction: column;
+        }
+
+        @media (max-width: 768px) {
+            .document-list {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .document-item h3 {
+            color: #495057;
+            margin-bottom: 10px;
+        }
+
+        .document-item p {
+            color: #6c757d;
+            margin-bottom: 15px;
+            flex-grow: 1;
+        }
+
+        .document-meta {
+            font-size: 0.9rem;
+            color: #6c757d;
+            margin-bottom: 15px;
+        }
+
+        .document-actions {
+            margin-top: auto;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+
+        .document-actions .btn {
+            flex: 1;
+            min-width: 80px;
+            font-size: 0.9rem;
+            padding: 8px 12px;
+        }
+
+        .alert {
+            padding: 15px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+        }
+
+        .alert-success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+
+        .alert-error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+
+        .file-upload {
+            border: 2px dashed #667eea;
+            border-radius: 10px;
+            padding: 40px;
+            text-align: center;
+            margin-bottom: 20px;
+            transition: all 0.3s ease;
+        }
+
+        .file-upload:hover {
+            background: #f8f9ff;
+        }
+
+        .file-upload input[type="file"] {
+            display: none;
+        }
+
+        .upload-text {
+            color: #667eea;
+            font-size: 1.1rem;
+            margin-bottom: 10px;
+        }
+
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 20px;
+        }
+
+        .spinner {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 15px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📚 文档管理系统</h1>
+            <!-- <p>管理您的文档和AI助手配置</p> -->
+        </div>
+
+        <div class="nav">
+            <button class="nav-item active" onclick="showSection('documents')">📄 文档管理</button>
+            <button class="nav-item" onclick="showSection('preamble')">⚙️ Preamble配置</button>
+            <button class="nav-item" onclick="showSection('upload')">📤 上传文档</button>
+        </div>
+
+        <div class="content">
+            <!-- 文档管理 -->
+            <div id="documents" class="section active">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                    <h2>📄 文档列表</h2>
+                    <!-- <button class="btn btn-danger" onclick="resetDocuments()" style="background: #dc3545; border: none; padding: 8px 16px; border-radius: 8px; color: white; cursor: pointer; font-size: 0.9rem;">
+                        🔄 重置存储
+                    </button> -->
+                </div>
+                <div class="loading" id="documentsLoading">
+                    <div class="spinner"></div>
+                    <p>正在加载文档...</p>
+                </div>
+                <div id="documentsList" class="document-list"></div>
+                <div id="pagination" class="pagination" style="display: none; margin-top: 20px; text-align: center;">
+                    <button id="prevPage" class="btn btn-secondary" disabled>⬅️ 上一页</button>
+                    <span id="pageInfo" style="margin: 0 15px; color: #6c757d;"></span>
+                    <button id="nextPage" class="btn btn-secondary" disabled>下一页 ➡️</button>
+                </div>
+            </div>
+
+            <!-- Preamble配置 -->
+            <div id="preamble" class="section">
+                <h2>⚙️ Preamble配置</h2>
+                <p style="margin-bottom: 20px; color: #6c757d;">
+                    Preamble是AI助手的系统提示词，用于定义助手的行为和角色。
+                </p>
+                
+                <div class="loading" id="preambleLoading">
+                    <div class="spinner"></div>
+                    <p>正在加载配置...</p>
+                </div>
+
+                <form id="preambleForm" style="display: none;">
+                    <div class="form-group">
+                        <label for="preambleContent">Preamble内容：</label>
+                        <textarea id="preambleContent" class="form-control" rows="22" 
+                                placeholder="请输入AI助手的系统提示词..."></textarea>
+                    </div>
+                    <button type="submit" class="btn btn-primary">💾 保存配置</button>
+                </form>
+            </div>
+
+            <!-- 上传文档 -->
+            <div id="upload" class="section">
+                <h2>📤 上传文档</h2>
+                
+                <!-- 文件上传 -->
+                <div class="file-upload" onclick="document.getElementById('fileInput').click()">
+                    <div class="upload-text">🎯 点击选择文件或拖拽文件到此处</div>
+                    <p style="color: #6c757d;">支持 .txt, .md, .json 等文本文件</p>
+                    <input type="file" id="fileInput" accept=".txt,.md,.json,.csv" onchange="handleFileSelect(event)">
+                </div>
+
+                <!-- 手动创建文档 -->
+                <h3 style="margin-top: 30px; margin-bottom: 15px;">✏️ 手动创建文档</h3>
+                <form id="createDocumentForm">
+                    <div class="form-group">
+                        <label for="documentFilename">文件名：</label>
+                        <input type="text" id="documentFilename" class="form-control" 
+                               placeholder="例如：example.md" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="documentContent">文档内容：</label>
+                        <textarea id="documentContent" class="form-control" rows="10" 
+                                placeholder="请输入文档内容..." required></textarea>
+                    </div>
+                    <button type="submit" class="btn btn-primary">📝 创建文档</button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- 消息提示 -->
+    <div id="alertContainer" style="position: fixed; top: 20px; right: 20px; z-index: 1000;"></div>
+
+    <script src="/static/admin.js"></script>
+
+    <!-- 演示嵌入聊天组件 -->
+    <script src="/static/chatbot.js"></script>
+    <script>
+        // 创建聊天组件实例
+        const chatbot = new RigChat({
+            apiBase: "", // 使用当前网站的API
+            title: "AI Assistant",
+            welcomeMessage: "👋 您好，我是AI Assistant，很高兴为您服务！",
+            buttonIcon: "ai",
+            theme: "dark",
+            position: "right",
+            placeholder: "请输入您的问题..."
+        });
+    </script>
+</body>
+</html>
