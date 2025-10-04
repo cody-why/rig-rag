@@ -64,12 +64,9 @@ pub async fn create_router(
         .route("/api/chat", post(handle_chat))
         .route("/api/history/{user_id}", get(get_chat_history));
 
-    // 如果有document store，添加文档和preamble管理路由
-    if document_store.is_some() {
-        router = router
-            .merge(crate::web::create_document_router())
-            .merge(crate::web::create_preamble_router());
-    }
+    router = router
+        .merge(crate::web::create_document_router())
+        .merge(crate::web::create_preamble_router());
 
     router
         .layer(

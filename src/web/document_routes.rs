@@ -11,7 +11,7 @@ use tracing::{error, info};
 
 use crate::{
     agent::RigAgent,
-    db::{DocumentStore, StoredDocument},
+    db::{Document, DocumentStore},
 };
 
 use crate::web::ChatStore;
@@ -58,8 +58,8 @@ struct PaginationQuery {
     offset: Option<usize>,
 }
 
-impl From<StoredDocument> for DocumentResponse {
-    fn from(doc: StoredDocument) -> Self {
+impl From<Document> for DocumentResponse {
+    fn from(doc: Document) -> Self {
         DocumentResponse {
             id: doc.id,
             filename: doc.source, // 使用 source 作为 filename
@@ -158,7 +158,7 @@ async fn create_document(
     info!("Creating document");
     match document_store {
         Some(store) => {
-            let doc = StoredDocument::new(req.content, req.filename);
+            let doc = Document::new(req.content, req.filename);
 
             // 获取 embedding model 从 agent context
             let embedding_model = {
@@ -327,7 +327,7 @@ async fn upload_document(
                 return Err(StatusCode::BAD_REQUEST);
             }
 
-            let doc = StoredDocument::new(content, filename);
+            let doc = Document::new(content, filename);
 
             // 获取 embedding model 从 agent context
             let embedding_model = {

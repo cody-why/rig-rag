@@ -1,9 +1,9 @@
 # https://doc.rust-lang.org/cargo/reference/manifest.html
 [build]
-target-dir = "/tmp/rustTmp/target"
+target-dir = "/workspaces/tmp/target"
 # rustflags = ["--cfg", "unsound_local_offset"] # local time
 # rustflags = ["-Zthreads=32", "-C", "link-arg=-fuse-ld=mold"] # nightly + mold linker
-# jobs = 8 # cpus
+# jobs = 16 # cpus
 # rustc-wrapper = "sccache" # cache rustc
 
 

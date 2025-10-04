@@ -7,7 +7,7 @@ use rig::{
     providers::openai::{self},
 };
 
-use super::{RigAgentBuilder, file_chunk::FileChunk};
+use super::RigAgentBuilder;
 use crate::db::DocumentStore;
 
 #[derive(Clone)]
@@ -23,7 +23,7 @@ pub struct RigAgentContext {
     pub openai_model: String,
     pub client: openai::Client,
     pub embedding_model: openai::EmbeddingModel,
-    pub needs_rebuild: bool, // 标记是否需要重建agent
+    pub needs_rebuild: bool,
 }
 
 impl RigAgent {
@@ -35,47 +35,13 @@ impl RigAgent {
         RigAgentBuilder::from_env()
     }
 
-    pub async fn add_documents(&mut self, documents: Vec<FileChunk>) -> anyhow::Result<()> {
-        if let Some(ref store) = self.document_store {
-            let mut stored_documents = Vec::new();
-
-            for (i, doc) in documents.into_iter().enumerate() {
-                tracing::info!("📄 {} ({} chunks)", doc.filename, doc.chunks.len());
-                for (chunk_idx, content) in doc.chunks.into_iter().enumerate() {
-                    let stored_doc = crate::db::StoredDocument::new(content, doc.filename.clone())
-                        .with_id(format!("{}_{}", i, chunk_idx));
-                    stored_documents.push(stored_doc);
-                }
-            }
-
-            if !stored_documents.is_empty() {
-                // 获取 embedding model
-                let embedding_model = {
-                    let context = self.context.read().unwrap();
-                    context.embedding_model.clone()
-                };
-
-                // 使用正确的方法添加文档并生成 embeddings
-                store
-                    .add_documents_with_embeddings(stored_documents, embedding_model)
-                    .await?;
-
-                // 标记需要重建 agent 以使用新文档
-                if let Ok(mut context) = self.context.write() {
-                    context.needs_rebuild = true;
-                    tracing::info!("✅ Documents added, marked agent for rebuild");
-                }
-            }
-        }
-
-        Ok(())
-    }
+    // 简化模式：禁用运行时添加文档
 
     /// 同步向量存储 - LanceDB 已经持久化，这里主要同步 preamble
     pub async fn sync_vector_store(&self) -> anyhow::Result<()> {
         // LanceDB 向量存储是持久化的，不需要重新加载文档
         // 这里主要用于同步其他配置
-        tracing::info!("✅ LanceDB vector store is persistent - no sync needed");
+        tracing::info!("✅ LanceDB vector store is persistent");
         Ok(())
     }
 
@@ -85,15 +51,8 @@ impl RigAgent {
         message: &str,
         history: Vec<rig::completion::Message>,
     ) -> anyhow::Result<String> {
-        // 检查是否有文档存储
-        let has_documents = if let Some(ref store) = self.document_store {
-            let doc_count = store.list_documents().await.unwrap_or_default().len();
-            tracing::info!("📚 Document store has {} documents", doc_count);
-            doc_count > 0
-        } else {
-            tracing::warn!("📚 No document store available");
-            false
-        };
+        // 简化：只要存在向量存储即认为可用
+        let has_documents = self.document_store.is_some();
 
         // 检查是否需要重建agent
         let needs_rebuild = {
@@ -166,35 +125,62 @@ impl RigAgent {
         };
 
         // 构建新的agent
-        if let Ok(mut context) = self.context.write() {
-            // 如果从文件成功加载了新的preamble，更新context
-            if let Some(new_preamble) = updated_preamble {
-                context.preamble = new_preamble;
-            }
-
-            let new_agent = if let Some(ref store) = self.document_store {
-                // 使用文档存储构建RAG agent
-                context.build_with_document_store(store)
-            } else {
-                // 构建基础agent
-                context.build()
+        let new_agent = if let Some(ref store) = self.document_store {
+            // 创建新的context用于构建agent
+            let context = {
+                let current_context = self.context.read().unwrap();
+                RigAgentContext {
+                    client: current_context.client.clone(),
+                    embedding_model: current_context.embedding_model.clone(),
+                    preamble: updated_preamble
+                        .clone()
+                        .unwrap_or_else(|| current_context.preamble.clone()),
+                    temperature: current_context.temperature,
+                    openai_model: current_context.openai_model.clone(),
+                    needs_rebuild: false,
+                }
             };
 
-            Ok(RigAgent {
-                agent: Arc::new(new_agent),
-                context: self.context.clone(),
-                document_store: self.document_store.clone(),
-            })
+            // 使用文档存储构建RAG agent
+            context.build_with_document_store(store).await
         } else {
-            anyhow::bail!("Failed to write to agent context for rebuilding");
+            // 创建新的context用于构建基础agent
+            let context = {
+                let current_context = self.context.read().unwrap();
+                RigAgentContext {
+                    client: current_context.client.clone(),
+                    embedding_model: current_context.embedding_model.clone(),
+                    preamble: updated_preamble
+                        .clone()
+                        .unwrap_or_else(|| current_context.preamble.clone()),
+                    temperature: current_context.temperature,
+                    openai_model: current_context.openai_model.clone(),
+                    needs_rebuild: false,
+                }
+            };
+
+            // 构建基础agent
+            context.build()
+        };
+
+        // 更新原始context的preamble（如果从文件加载了新的）
+        if let Some(new_preamble) = updated_preamble
+            && let Ok(mut context) = self.context.write()
+        {
+            context.preamble = new_preamble;
         }
+
+        Ok(RigAgent {
+            agent: Arc::new(new_agent),
+            context: self.context.clone(),
+            document_store: self.document_store.clone(),
+        })
     }
 }
 
 impl RigAgentContext {
+    /// 构建基础 agent
     pub fn build(&self) -> Agent<openai::CompletionModel> {
-        // 创建一个基础的 agent，没有向量存储
-        // 向量存储现在由 LanceDB 处理
         self.client
             .completion_model(&self.openai_model)
             .completions_api()
@@ -204,35 +190,61 @@ impl RigAgentContext {
             .build()
     }
 
+    /// 计算文档数量 - 提取公共逻辑
+    async fn count_documents(&self, document_store: &crate::db::DocumentStore) -> usize {
+        if let Some(vector_index) = document_store.get_vector_index() {
+            match vector_index.count_documents_async().await {
+                Ok(count) => count,
+                Err(e) => {
+                    tracing::warn!("⚠️ Failed to count documents: {}, using fallback", e);
+                    vector_index.len() // 使用同步方法作为后备
+                }
+            }
+        } else {
+            0
+        }
+    }
+
+    /// 计算 top_k 值 - 提取公共逻辑
+    fn calculate_top_k(&self, total_docs: usize) -> usize {
+        if total_docs == 0 {
+            0
+        } else if total_docs <= 10 {
+            total_docs
+        } else {
+            total_docs.clamp(1, 10)
+        }
+    }
+
     /// 构建带有文档存储的RAG agent
-    pub fn build_with_document_store(
+    pub async fn build_with_document_store(
         &self,
         document_store: &crate::db::DocumentStore,
     ) -> Agent<openai::CompletionModel> {
-        if let Some(vector_index) = document_store.get_vector_index() {
-            let total_docs = vector_index.len();
-            // RAG 检索数量：取前 3 个最相关文档，而不是所有文档
-            let top_k = total_docs.clamp(1, 3);
-            tracing::info!(
-                "✅ Building RAG agent with {} total documents, top_k={}",
-                total_docs,
-                top_k
-            );
+        let total_docs = self.count_documents(document_store).await;
 
-            // 创建包装器以避免生命周期问题
-            let store_wrapper = crate::db::DocumentStoreWrapper(Arc::new(document_store.clone()));
-
-            self.client
-                .completion_model(&self.openai_model)
-                .completions_api()
-                .into_agent_builder()
-                .temperature(self.temperature)
-                .preamble(&self.preamble)
-                .dynamic_context(top_k, store_wrapper)
-                .build()
-        } else {
-            tracing::warn!("⚠️ Vector index not available, using basic agent");
-            self.build()
+        if total_docs == 0 {
+            tracing::info!("📋 No documents found in database, using basic agent");
+            return self.build();
         }
+
+        let top_k = self.calculate_top_k(total_docs);
+        tracing::info!(
+            "✅ Building RAG agent with {} total documents, top_k={}",
+            total_docs,
+            top_k
+        );
+
+        // 创建包装器以避免生命周期问题
+        let store_wrapper = crate::db::DocumentStoreWrapper(Arc::new(document_store.clone()));
+
+        self.client
+            .completion_model(&self.openai_model)
+            .completions_api()
+            .into_agent_builder()
+            .temperature(self.temperature)
+            .preamble(&self.preamble)
+            .dynamic_context(top_k, store_wrapper)
+            .build()
     }
 }
