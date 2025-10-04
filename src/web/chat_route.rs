@@ -7,7 +7,7 @@ use axum::{
 };
 use mini_moka::sync::Cache;
 use rig::{
-    completion::{Chat, Message},
+    completion::Message,
     message::{AssistantContent, UserContent},
 };
 use serde::{Deserialize, Serialize};
@@ -16,11 +16,11 @@ use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
 use tracing::{error, info};
 
-use crate::agent::RigAgent;
+use crate::{agent::RigAgent, db::DocumentStore};
 
-type UserId = String;
-type ChatHistory = Vec<Message>;
-type ChatStore = Arc<RwLock<Cache<UserId, ChatHistory>>>;
+pub type UserId = String;
+pub type ChatHistory = Vec<Message>;
+pub type ChatStore = Arc<RwLock<Cache<UserId, ChatHistory>>>;
 
 #[derive(Debug, Deserialize)]
 pub struct ChatRequest {
@@ -40,9 +40,13 @@ struct ChatHistoryItem {
     content: String,
 }
 
-pub async fn create_router(agent: Arc<RigAgent>) -> Router {
+pub async fn create_router(
+    agent: Arc<RigAgent>,
+    document_store: Option<Arc<DocumentStore>>,
+) -> Router {
+    let server_url = "*";
     let cors = CorsLayer::new()
-        .allow_origin("http://localhost:3000".parse::<HeaderValue>().unwrap())
+        .allow_origin(server_url.parse::<HeaderValue>().unwrap())
         .allow_methods([Method::GET, Method::POST])
         .allow_headers(vec![axum::http::header::CONTENT_TYPE]);
 
@@ -53,21 +57,33 @@ pub async fn create_router(agent: Arc<RigAgent>) -> Router {
     // 创建聊天历史存储
     let chat_store: ChatStore = Arc::new(RwLock::new(cache));
 
-    Router::new()
+    let mut router = Router::new()
         .route("/", get(serve_index))
+        .route("/admin", get(serve_admin))
         .route("/static/{file}", get(static_file))
         .route("/api/chat", post(handle_chat))
-        .route("/api/history/{user_id}", get(get_chat_history))
+        .route("/api/history/{user_id}", get(get_chat_history));
+
+    router = router
+        .merge(crate::web::create_document_router())
+        .merge(crate::web::create_preamble_router());
+
+    router
         .layer(
             tower::ServiceBuilder::new()
                 .layer(tower_http::limit::RequestBodyLimitLayer::new(1024 * 10)), // 限制消息大小为10KB
         )
         .layer(cors)
-        .with_state((agent, chat_store))
+        .with_state((agent, document_store, chat_store))
 }
 
 async fn serve_index() -> Html<String> {
     let file_content = std::fs::read_to_string("static/index.html").unwrap();
+    Html(file_content)
+}
+
+async fn serve_admin() -> Html<String> {
+    let file_content = std::fs::read_to_string("static/admin.html").unwrap();
     Html(file_content)
 }
 
@@ -93,8 +109,12 @@ async fn static_file(Path(file): Path<String>) -> axum::response::Response {
 }
 
 // 简单的语言检测逻辑
+#[allow(dead_code)]
 fn is_chinese(text: &str) -> bool {
-    let chinese_chars = text.chars().filter(|&c| ('\u{4e00}'..='\u{9fff}').contains(&c)).count();
+    let chinese_chars = text
+        .chars()
+        .filter(|&c| ('\u{4e00}'..='\u{9fff}').contains(&c))
+        .count();
     let total_chars = text.chars().filter(|&c| !c.is_whitespace()).count();
 
     // 如果中文字符超过非空白字符的30%，认为是中文
@@ -125,13 +145,12 @@ fn is_meaningless_message(message: &str) -> bool {
 }
 
 async fn handle_chat(
-    State((agent, chat_store)): State<(Arc<RigAgent>, ChatStore)>, Json(payload): Json<ChatRequest>,
+    State((agent, _, chat_store)): State<(Arc<RigAgent>, Option<Arc<DocumentStore>>, ChatStore)>,
+    Json(payload): Json<ChatRequest>,
 ) -> Json<ChatResponse> {
     // 从请求中获取用户 ID 或生成一个新的
     let user_id = payload.user_id.unwrap_or_else(generate_user_id);
     let message = payload.message.trim();
-
-    info!("Received chat request from user {}: {}", user_id, message);
 
     // 获取用户的聊天历史
     let chat_history = {
@@ -139,17 +158,10 @@ async fn handle_chat(
         chat_store.get(&user_id).unwrap_or_default()
     };
 
-    // 检测用户输入语言
-    let is_chinese_input = is_chinese(message);
-    let enhanced_message = if !is_chinese_input {
-        // 如果不是中文，添加明确的语言指令
-        format!("回复请使用用户的语言,用户的问题是:{}", message)
-    } else {
-        message.to_string()
-    };
+    info!("Received chat request from user {}: {}", user_id, message);
 
     // 使用 RigAgent 处理聊天请求
-    let response = match agent.agent.as_ref().chat(enhanced_message, chat_history).await {
+    let response = match agent.dynamic_chat(message, chat_history).await {
         Ok(response) => {
             if !is_meaningless_message(message) {
                 // 将用户消息和 AI 响应添加到历史记录
@@ -165,6 +177,7 @@ async fn handle_chat(
                 // 如果历史记录超过10条，则删除最早的一条
                 if history.len() > 10 {
                     history.remove(0);
+                    history.remove(0);
                 }
 
                 chat_store.insert(user_id.clone(), history);
@@ -172,18 +185,19 @@ async fn handle_chat(
 
             info!("Chat response for user {}: {}", user_id, response);
             response
-        },
+        }
         Err(e) => {
             error!("Error generating chat response: {}", e);
             format!("Sorry, I encountered an error: {}", e)
-        },
+        }
     };
 
     Json(ChatResponse { response, user_id })
 }
 
 async fn get_chat_history(
-    State((_, chat_store)): State<(Arc<RigAgent>, ChatStore)>, Path(user_id): Path<String>,
+    State((_, _, chat_store)): State<(Arc<RigAgent>, Option<Arc<DocumentStore>>, ChatStore)>,
+    Path(user_id): Path<String>,
 ) -> Json<Vec<ChatHistoryItem>> {
     let chat_store = chat_store.read().await;
 
@@ -199,7 +213,7 @@ async fn get_chat_history(
                 }),
                 _ => None,
             },
-            Message::Assistant { content } => match content.first() {
+            Message::Assistant { id: _, content } => match content.first() {
                 AssistantContent::Text(text) => Some(ChatHistoryItem {
                     role: "assistant".to_string(),
                     content: text.text.clone(),
