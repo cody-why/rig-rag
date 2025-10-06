@@ -1,15 +1,53 @@
-## https://siliconflow.cn/zh-cn/models
+# Rig Rag - 文档管理
 
-### https://api.siliconflow.cn/v1
-- THUDM/glm-4-9b-chat
-- Qwen/Qwen2.5-7B-Instruct
+这是一个 AI 聊天机器人演示。
 
+## 🚀 功能特性
 
+### 核心功能
+- 🤖 基于 RAG (检索增强生成) 的 AI 聊天机器人
+- 📚 支持多种文档格式 (Markdown, TXT, JSON, CSV)
+- 💬 智能中英文语言检测和回复
+- 📝 聊天历史记录管理
 
+### 新增功能
+- 🗄️ LanceDB 数据库存储支持
+- 🌐 网页文档管理界面
+- 📤 文件上传功能
+- ✏️ 在线文档编辑
+- ⚙️ Preamble 配置管理
+- 🔍 文档搜索和查看
 
-# tailwindcss
+## 🚀 功能特性
 
+## 🛠️ 快速开始
+
+### 1. 克隆项目
+
+### 2. 配置环境变量
+复制环境变量示例文件：
 ```bash
-cd static
-tailwindcss -i input.css -o output.css --minify
+cp env.example .env
 ```
+
+编辑 `.env` 文件，填入你的配置
+
+
+### 3. 运行项目
+```bash
+cargo run
+```
+
+服务器将在 `http://127.0.0.1:3000` 启动。
+
+## 🌐 使用界面
+
+### 聊天界面
+访问 `http://127.0.0.1:3000` 使用 AI 聊天功能。
+
+### 文档管理界面
+访问 `http://127.0.0.1:3000/admin` 进行文档和配置管理：
+
+- **📄 文档管理**: 查看、编辑、删除已上传的文档
+- **📤 上传文档**: 支持拖拽上传或手动创建文档
+- **⚙️ Preamble配置**: 修改 AI 助手的系统提示词

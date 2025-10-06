@@ -5,9 +5,9 @@ class RigChat {
             apiBase: config.apiBase || '', // 默认使用当前域名
             theme: config.theme || 'light', // light 或 dark
             position: config.position || 'right', // right 或 left
-            welcomeMessage: config.welcomeMessage || '你好，我是Rig Assistant，很高兴为您服务！',
+            welcomeMessage: config.welcomeMessage || '你好，我是AI Assistant，很高兴为您服务！',
             buttonIcon: config.buttonIcon || 'ai', // 图标名称
-            title: config.title || 'Rig Assistant',
+            title: config.title || 'AI Assistant',
             placeholder: config.placeholder || 'Type your message...',
             containerId: config.containerId || 'rig-chat-container',
             defaultWidth: config.defaultWidth || 450,

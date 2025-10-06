@@ -28,8 +28,8 @@ static/
    // 创建聊天组件实例
    const chatbot = new RigChat({
       apiBase: "", // 使用当前网站的API
-      title: "Rig Assistant",
-      welcomeMessage: "👋 您好，我是Rig Assistant，很高兴为您服务！",
+      title: "AI Assistant",
+      welcomeMessage: "👋 您好，我是AI Assistant，很高兴为您服务！",
       buttonIcon: "ai",
       theme: "dark",
       position: "right",
@@ -47,7 +47,6 @@ static/
 - 响应式设计，适配移动和桌面设备
 - Markdown 文本渲染支持（包括代码高亮）
 - 可嵌入到任何网站的独立组件
-- 聊天历史记录保存
 - 自定义主题和样式选项
 
 ## 嵌入组件配置选项
@@ -57,8 +56,8 @@ static/
 | apiBase | 当前域名 | Rig API 的基础 URL |
 | theme | "light" | 主题颜色 ("light" 或 "dark") |
 | position | "right" | 聊天窗口位置 ("right" 或 "left") |
-| welcomeMessage | "Welcome to Rig Assistant! How can I help you today?" | 初始欢迎消息 |
-| title | "Rig Assistant" | 聊天窗口标题 |
+| welcomeMessage | "Welcome to AI Assistant! How can I help you today?" | 初始欢迎消息 |
+| title | "AI Assistant" | 聊天窗口标题 |
 | buttonIcon | "ai" | 聊天按钮图标名称 |
 | placeholder | "Type your message..." | 输入框提示文字 |
 | containerId | "rig-chat-container" | 聊天组件容器的 ID |

@@ -1,0 +1,41 @@
+# https://doc.rust-lang.org/cargo/reference/manifest.html
+[build]
+target-dir = "/tmp/rustTemp/target"
+# rustflags = ["--cfg", "unsound_local_offset"] # local time
+# rustflags = ["-Zthreads=32", "-Clink-arg=-fuse-ld=mold"] # nightly + mold linker
+# jobs = 16 # cpus
+# rustc-wrapper = "sccache" # cache rustc
+
+
+[env]
+
+
+[alias]
+# test = "test -- --nocapture"
+
+
+[lints.clippy]
+new_without_default = "allow"
+single_match = "allow"
+uninlined_format_args = "allow"
+redundant_clone = "deny"
+
+
+[profile.release]
+opt-level = 's'
+lto = "thin"
+# codegen-units = 8
+panic = "abort"
+strip = true
+
+[profile.dev]
+# opt-level = 1
+# faster compile
+split-debuginfo = "unpacked"
+# strip = "debuginfo"
+incremental = false
+
+
+
+
+

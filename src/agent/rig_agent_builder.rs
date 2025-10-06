@@ -1,19 +1,10 @@
 use std::sync::{Arc, RwLock};
 
 use anyhow::Context;
-use rig::{
-    embeddings::EmbeddingsBuilder, providers::openai,
-    vector_store::in_memory_store::InMemoryVectorStore,
-};
-use tracing::info;
+use rig::prelude::EmbeddingsClient;
+use tracing::{debug, info, warn};
 
-use crate::{
-    agent::{
-        file_chunk::FileChunk,
-        rig_agent::{Document, RigAgentContext},
-    },
-    utils::get_env_or_panic,
-};
+use crate::{agent::rig_agent::RigAgentContext, db::DocumentStore, utils::get_env_or_panic};
 
 use super::rig_agent::RigAgent;
 
@@ -29,6 +20,8 @@ pub struct RigAgentBuilder {
     embedding_api_key: String,
     embedding_url: String,
     embedding_model: String,
+    lancedb_path: String,
+    document_store: Option<Arc<DocumentStore>>,
 }
 
 impl RigAgentBuilder {
@@ -38,6 +31,7 @@ impl RigAgentBuilder {
             .parse::<f64>()
             .expect("Failed to parse temperature");
         let documents_dir = get_env_or_panic("DOCUMENTS_DIR");
+        let lancedb_path = get_env_or_panic("LANCEDB_PATH");
 
         let openai_api_key = get_env_or_panic("OPENAI_API_KEY");
         let openai_base_url = get_env_or_panic("OPENAI_BASE_URL");
@@ -47,11 +41,25 @@ impl RigAgentBuilder {
         let embedding_url = get_env_or_panic("EMBEDDING_BASE_URL");
         let embedding_model = get_env_or_panic("EMBEDDING_MODEL");
 
-        let _preamble_file = std::env::current_dir().unwrap().join(&preamble_file);
-        info!("preamble_file: {}", _preamble_file.display());
-        let preamble =
-            std::fs::read_to_string(&_preamble_file).expect("Failed to read preamble file");
-        let preamble_file = _preamble_file.file_name().unwrap().to_str().unwrap().to_string();
+        let (preamble, preamble_file) = if preamble_file.is_empty() {
+            // 如果没有设置preamble文件，使用默认preamble
+            (
+                "You are a helpful AI assistant.".to_string(),
+                "".to_string(),
+            )
+        } else {
+            let _preamble_file = std::env::current_dir().unwrap().join(&preamble_file);
+            info!("preamble_file: {}", _preamble_file.display());
+            let preamble = std::fs::read_to_string(&_preamble_file)
+                .unwrap_or_else(|_| "You are a helpful AI assistant.".to_string());
+            let preamble_file = _preamble_file
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_string();
+            (preamble, preamble_file)
+        };
 
         RigAgentBuilder {
             preamble,
@@ -64,6 +72,8 @@ impl RigAgentBuilder {
             embedding_api_key,
             embedding_url,
             embedding_model,
+            lancedb_path,
+            document_store: None,
         }
     }
 
@@ -121,73 +131,153 @@ impl RigAgentBuilder {
         self
     }
 
+    /// 设置文档存储
+    pub fn document_store(&mut self, document_store: Arc<DocumentStore>) -> &mut Self {
+        self.document_store = Some(document_store);
+        self
+    }
+
     /// 构建agent
     pub async fn build(self) -> anyhow::Result<RigAgent> {
-        let client = openai::Client::from_url(&self.openai_api_key, &self.openai_base_url);
+        info!("🚀 Initializing RigAgent...");
 
-        // 加载文件
-        let documents_dir = std::env::current_dir()?.join(&self.documents_dir);
-        info!("Loading documents from {}", documents_dir.display());
+        // 并发初始化客户端
+        let (client, embedding_model) = self
+            .init_clients()
+            .await
+            .context("Failed to initialize clients")?;
 
-        let chunks = FileChunk::load_files(documents_dir.join("*.*"), &self.preamble_file)
-            .context("Failed to load documents")?;
+        // 加载preamble
+        let final_preamble = self
+            .load_preamble()
+            .await
+            .context("Failed to load preamble")?;
 
-        info!(
-            "Successfully loaded and chunked {} document chunks",
-            chunks.iter().fold(0, |acc, doc| acc + doc.chunks.len())
-        );
+        // 创建 LanceDB 存储
+        let table_name = "documents";
+        let document_store = self
+            .initialize_document_store(table_name, embedding_model.clone())
+            .await;
 
-        // 创建嵌入模型
-        // 英文使用nomic-embed-text, 中文使用bge-m3
-        let embedding_client =
-            openai::Client::from_url(&self.embedding_api_key, &self.embedding_url);
-        let model = embedding_client.embedding_model(&self.embedding_model);
-
-        // 创建嵌入构建器
-        let mut builder = EmbeddingsBuilder::new(model.clone());
-
-        // 添加来自 markdown 文档的块
-        for (i, doc) in chunks.into_iter().enumerate() {
-            println!("{} {} chunks: {}", i + 1, doc.filename, doc.chunks.len());
-            for content in doc.chunks {
-                builder = builder.document(Document {
-                    id: format!("document{}", i + 1),
-                    content,
-                })?;
-            }
-        }
-
-        // 构建嵌入
-        info!("Generating embeddings...");
-        let embeddings = builder.build().await?;
-        info!("Successfully generated embeddings");
-
-        // 创建向量存储和索引
-        let vector_store = InMemoryVectorStore::from_documents(embeddings);
+        // 创建上下文和代理
         let context = RigAgentContext {
             client: client.clone(),
-            embedding_model: model.clone(),
-            vector_store: vector_store.clone(),
-            preamble: self.preamble.clone(),
+            embedding_model: embedding_model.clone(),
+            preamble: final_preamble.clone(),
             temperature: self.temperature,
             openai_model: self.openai_model.clone(),
+            needs_rebuild: false, // 初始化时不需要重建
         };
 
-        let index = vector_store.index(model);
-        info!("Successfully created vector store and index");
-        let len = index.len();
-        // 创建 RAG 代理
-        info!("Initializing RAG agent...");
-        let rag_agent = client
-            .agent(&self.openai_model)
-            .temperature(self.temperature) // 0.1-0.3 准确性高，0.5-0.7 创造性高
-            .preamble(&self.preamble)
-            .dynamic_context(len, index)
-            .build();
+        let rag_agent = self
+            .build_rag_agent(&client, &final_preamble, document_store.as_ref())
+            .await?;
+
+        info!("✅ RigAgent initialized successfully");
 
         Ok(RigAgent {
             agent: Arc::new(rag_agent),
             context: Arc::new(RwLock::new(context)),
+            document_store,
         })
+    }
+
+    /// 初始化OpenAI客户端
+    async fn init_clients(
+        &self,
+    ) -> anyhow::Result<(
+        rig::providers::openai::Client,
+        rig::providers::openai::EmbeddingModel,
+    )> {
+        use rig::providers::openai::Client;
+
+        debug!("Initializing OpenAI clients...");
+
+        let client = Client::builder(&self.openai_api_key)
+            .base_url(&self.openai_base_url)
+            .build()
+            .context("Failed to create OpenAI completion client")?;
+
+        let embedding_client = Client::builder(&self.embedding_api_key)
+            .base_url(&self.embedding_url)
+            .build()
+            .context("Failed to create OpenAI embedding client")?;
+
+        let model = embedding_client.embedding_model(&self.embedding_model);
+
+        debug!("OpenAI clients initialized successfully");
+        Ok((client, model))
+    }
+
+    /// 加载preamble - 从文件加载
+    async fn load_preamble(&self) -> anyhow::Result<String> {
+        // 如果设置了preamble文件，优先从文件读取最新内容
+        if !self.preamble_file.is_empty() {
+            let preamble_path =
+                std::env::var("PREAMBLE_FILE").unwrap_or_else(|_| "data/preamble.txt".to_string());
+
+            match tokio::fs::read_to_string(&preamble_path).await {
+                Ok(content) => {
+                    info!("✅ Loaded preamble from file: {}", preamble_path);
+                    Ok(content)
+                }
+                Err(e) => {
+                    warn!(
+                        "⚠️ Failed to read preamble file {}: {}, using default",
+                        preamble_path, e
+                    );
+                    Ok(self.preamble.clone())
+                }
+            }
+        } else {
+            // 没有设置preamble文件，使用初始化时的preamble
+            debug!("Using default preamble (no file specified)");
+            Ok(self.preamble.clone())
+        }
+    }
+
+    /// 初始化文档存储
+    async fn initialize_document_store(
+        &self,
+        table_name: &str,
+        embedding_model: rig::providers::openai::EmbeddingModel,
+    ) -> Option<Arc<DocumentStore>> {
+        if let Some(store) = &self.document_store {
+            debug!("Using provided document store");
+            return Some(store.clone());
+        }
+        let store = DocumentStore::new(&self.lancedb_path, table_name);
+
+        store.load_existing_index(embedding_model).await.unwrap();
+
+        Some(Arc::new(store))
+    }
+
+    /// 构建RAG代理 - 使用 RigAgentContext 的公共方法
+    async fn build_rag_agent(
+        &self,
+        client: &rig::providers::openai::Client,
+        preamble: &str,
+        document_store: Option<&Arc<DocumentStore>>,
+    ) -> anyhow::Result<rig::agent::Agent<rig::providers::openai::CompletionModel>> {
+        let context = RigAgentContext {
+            client: client.clone(),
+            embedding_model: self.init_clients().await?.1,
+            preamble: preamble.to_string(),
+            temperature: self.temperature,
+            openai_model: self.openai_model.clone(),
+            needs_rebuild: false,
+        };
+
+        match document_store {
+            Some(store) => {
+                info!("ℹ️ Building RAG agent with document store");
+                Ok(context.build_with_document_store(store).await)
+            }
+            None => {
+                info!("ℹ️ No document store configured, using basic agent");
+                Ok(context.build())
+            }
+        }
     }
 }

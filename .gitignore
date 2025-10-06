@@ -1,4 +1,6 @@
-/target
+target
 Cargo.lock
 .env
-
+lancedb
+logs
+.DS_Store
