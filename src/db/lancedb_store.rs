@@ -81,9 +81,9 @@ impl<'de> Deserialize<'de> for Document {
 }
 
 /// LanceDB 向量存储
-#[derive(Clone)]
+/// 建议使用 Arc<DocumentStore<M>> 来共享实例
 pub struct DocumentStore<M: EmbeddingModel> {
-    vector_index: Arc<RwLock<Option<LanceDbVectorIndex<M>>>>,
+    vector_index: RwLock<Option<LanceDbVectorIndex<M>>>,
     db_path: String,
     table_name: String,
 }
@@ -93,7 +93,7 @@ impl<M: EmbeddingModel> DocumentStore<M> {
         Self {
             db_path: db_path.to_string(),
             table_name: table_name.to_string(),
-            vector_index: Arc::new(RwLock::new(None)),
+            vector_index: RwLock::new(None),
         }
     }
 
@@ -523,6 +523,7 @@ impl<M: EmbeddingModel> DocumentStore<M> {
     }
 
     /// 删除文档
+    /// 如果id包含分块标识，删除所有相关的分块文档
     pub async fn delete_document(&self, id: &str) -> Result<()> {
         let db = lancedb::connect(&self.db_path)
             .execute()
@@ -535,12 +536,25 @@ impl<M: EmbeddingModel> DocumentStore<M> {
             .await
             .context("Failed to open table for deleting document")?;
 
+        // 检查是否是分块文档的base_id
+        let query_condition = if id.ends_with("_CHUNKED") {
+            // 分块文档：删除所有以base_id开头的文档
+            let base_id = id.strip_suffix("_CHUNKED").unwrap_or(id);
+            format!("id LIKE '{}%'", base_id)
+        } else {
+            // 普通文档：精确匹配
+            format!("id = '{}'", id)
+        };
+
         table
-            .delete(&format!("id = '{}'", id))
+            .delete(&query_condition)
             .await
             .context("Failed to delete document")?;
 
-        info!("Successfully deleted document with id '{}'", id);
+        info!(
+            "Successfully deleted document(s) with condition: {}",
+            query_condition
+        );
         Ok(())
     }
 
@@ -703,20 +717,33 @@ impl<M: EmbeddingModel> VectorStoreIndex for DocumentStore<M> {
     }
 }
 
-// 包装类型，以便动态上下文使用 'static 引用
+/// Newtype wrapper 用于在 RAG dynamic_context 中使用 Arc<DocumentStore>
+/// 这个包装器实现了 VectorStoreIndex，可以直接传递给 dynamic_context
 #[derive(Clone)]
-pub struct DocumentStoreWrapper<M: EmbeddingModel>(pub Arc<DocumentStore<M>>);
+pub struct DocumentStoreRef<M: EmbeddingModel>(pub Arc<DocumentStore<M>>);
 
-impl<M: EmbeddingModel> VectorStoreIndex for DocumentStoreWrapper<M> {
+impl<M: EmbeddingModel> DocumentStoreRef<M> {
+    pub fn new(store: Arc<DocumentStore<M>>) -> Self {
+        Self(store)
+    }
+}
+
+impl<M: EmbeddingModel> From<Arc<DocumentStore<M>>> for DocumentStoreRef<M> {
+    fn from(store: Arc<DocumentStore<M>>) -> Self {
+        Self(store)
+    }
+}
+
+impl<M: EmbeddingModel> VectorStoreIndex for DocumentStoreRef<M> {
     async fn top_n_ids(
         &self, req: VectorSearchRequest,
     ) -> Result<Vec<(f64, String)>, rig::vector_store::VectorStoreError> {
-        VectorStoreIndex::top_n_ids(self.0.as_ref(), req).await
+        self.0.top_n_ids(req).await
     }
 
     async fn top_n<T: for<'a> serde::Deserialize<'a> + Send>(
         &self, req: VectorSearchRequest,
     ) -> Result<Vec<(f64, String, T)>, rig::vector_store::VectorStoreError> {
-        VectorStoreIndex::top_n(self.0.as_ref(), req).await
+        self.0.top_n(req).await
     }
 }

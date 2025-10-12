@@ -6,7 +6,7 @@
 
 ### 核心功能
 - 🤖 基于 RAG (检索增强生成) 的 AI 聊天机器人
-- 📚 支持多种文档格式 (Markdown, TXT, JSON, CSV)
+- 📚 支持多种文档格式 (Markdown, TXT, JSON, CSV, PDF, DOCX, XLSX)
 - 💬 智能中英文语言检测和回复
 - 📝 聊天历史记录管理
 
@@ -51,3 +51,18 @@ cargo run
 - **📄 文档管理**: 查看、编辑、删除已上传的文档
 - **📤 上传文档**: 支持拖拽上传或手动创建文档
 - **⚙️ Preamble配置**: 修改 AI 助手的系统提示词
+
+
+# 前端开发
+
+```bash
+rig-rag/
+├── frontend/           # 前端源码
+├── static/            # 构建输出
+```
+
+```bash
+npm install -g terser
+npm run build
+```
+

@@ -58,13 +58,11 @@ class RigChat {
     injectStyles() {
         const styleEl = document.createElement('style');
         styleEl.textContent = `
-        /* Rig Chat 基础样式 */
         #rig-chat-container * {
             box-sizing: border-box;
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, "Open Sans", "Helvetica Neue", sans-serif;
         }
         
-        /* 聊天容器 */
         .chat-container {
             height: calc(100vh - 180px);
             max-height: 500px;
@@ -73,8 +71,7 @@ class RigChat {
         .chat-widget {
             transition: all 0.3s ease;
             transform-origin: bottom right;
-            /* 移除固定宽高，通过JS动态设置 */
-            max-width: none !important; /* 移除最大宽度限制 */
+            max-width: none !important; 
             position: relative;
             min-width: 300px;
             min-height: 400px;
@@ -484,7 +481,7 @@ class RigChat {
             }
             
             const script = document.createElement('script');
-            script.src = 'https://cdn.jsdelivr.net/npm/marked@4.3.0/marked.min.js';
+            script.src = 'https://cdn.jsdelivr.net/npm/marked';
             script.onload = () => {
                 console.log('Marked library loaded');
                 resolve();
@@ -510,11 +507,11 @@ class RigChat {
         const buttonIcon = getSvgIcon(this.config.buttonIcon);
         
         container.innerHTML = `
-        <button id="rig-chat-button" class="chat-button position-${this.config.position} theme-${this.config.theme}" data-icon="${this.config.buttonIcon}">
+        <button id="rig-chat-button" class="chat-button" data-icon="${this.config.buttonIcon}">
             ${buttonIcon}
         </button>
         
-        <div id="rig-chat-widget" class="chat-widget collapsed position-${this.config.position} theme-${this.config.theme}" style="width:${this.config.defaultWidth}px;height:${this.config.defaultHeight}px;">
+        <div id="rig-chat-widget" class="chat-widget collapsed" style="width:${this.config.defaultWidth}px;height:${this.config.defaultHeight}px;">
             <div id="rig-chat-header">
                 <div class="rig-header-title">${this.config.title}</div>
                 <div class="header-controls">
@@ -543,6 +540,12 @@ class RigChat {
             </div>
         </div>
         `;
+        
+        // 动态添加位置和主题类名
+        const button = document.getElementById('rig-chat-button');
+        const widget = document.getElementById('rig-chat-widget');
+        button.classList.add(`position-${this.config.position}`, `theme-${this.config.theme}`);
+        widget.classList.add(`position-${this.config.position}`, `theme-${this.config.theme}`);
         
         // 应用当前主题
         document.documentElement.classList.add(`theme-${this.config.theme}`);

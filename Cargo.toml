@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 # git="https://github.com/0xPlaygrounds/rig"
-rig-core = { version = "0.21", features = ["derive"] }
+rig-core = { version = "0.21", features = ["all", "reqwest-rustls"], default-features = false }
 rig-derive = "0.1"
 rig-lancedb = "0.2"
 
@@ -29,11 +29,27 @@ time = { version = "0.3" }
 axum = { version = "0.8", features = ["multipart"] }
 tower-http = { version = "0.6", features = ["cors", "limit"] }
 tower = "0.5"
+tower_governor = { version = "0.8", features = ["axum"], default-features = false }
+
+# Database for user management
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "migrate"] }
+
+# Authentication
+jsonwebtoken = { version = "10", features = ["rust_crypto"] }
+bcrypt = "0.17"
 
 mini-moka = "0.10"
 futures = "0.3.31"
 
+# Document parsing
+pdf-extract = "0.10"
+calamine = "0.31"
+bytes = "1"
+zip = "6"
+quick-xml = "0.38"
+encoding_rs = "0.8"
+chardetng = "0.1"
 
-[dev-dependencies]
 
-
+[lints.clippy]
+new_without_default = "allow"

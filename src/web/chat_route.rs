@@ -1,11 +1,10 @@
 use std::{sync::Arc, time::Duration};
 
-use axum::{Router, extract::{Json, Path, State}, http::{HeaderValue, Method}, response::Html, routing::{get, post}};
+use axum::{Router, extract::{Json, Path, State}, routing::{get, post}};
 use mini_moka::sync::Cache;
 use rig::{completion::Message, message::{AssistantContent, UserContent}};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
-use tower_http::cors::CorsLayer;
 use tracing::{error, info};
 
 use crate::{agent::RigAgent, db::DocumentStore};
@@ -27,76 +26,24 @@ pub struct ChatResponse {
 }
 
 #[derive(Debug, Serialize)]
-struct ChatHistoryItem {
+pub struct ChatHistoryItem {
     role: String,
     content: String,
 }
 
-pub async fn create_router(
-    agent: Arc<RigAgent>, document_store: Option<Arc<DocumentStore>>,
-) -> Router {
-    let server_url = "*";
-    let cors = CorsLayer::new()
-        .allow_origin(server_url.parse::<HeaderValue>().unwrap())
-        .allow_methods([Method::GET, Method::POST])
-        .allow_headers(vec![axum::http::header::CONTENT_TYPE]);
+pub fn create_chat_router() -> Router<(Arc<RigAgent>, Option<Arc<DocumentStore>>, ChatStore)> {
+    Router::new()
+        .route("/api/chat", post(handle_chat))
+        .route("/api/history/{user_id}", get(get_chat_history))
+}
 
+pub fn create_chat_store() -> ChatStore {
     let cache: Cache<UserId, ChatHistory> = Cache::builder()
         .time_to_idle(Duration::from_secs(30 * 60))
         // .time_to_live(Duration::from_secs(60 * 60))
         .build();
     // 创建聊天历史存储
-    let chat_store: ChatStore = Arc::new(RwLock::new(cache));
-
-    let mut router = Router::new()
-        .route("/", get(serve_index))
-        .route("/admin", get(serve_admin))
-        .route("/static/{file}", get(static_file))
-        .route("/api/chat", post(handle_chat))
-        .route("/api/history/{user_id}", get(get_chat_history));
-
-    router = router
-        .merge(crate::web::create_document_router())
-        .merge(crate::web::create_preamble_router());
-
-    router
-        .layer(
-            tower::ServiceBuilder::new()
-                .layer(tower_http::limit::RequestBodyLimitLayer::new(1024 * 10)), // 限制消息大小为10KB
-        )
-        .layer(cors)
-        .with_state((agent, document_store, chat_store))
-}
-
-async fn serve_index() -> Html<String> {
-    let file_content = std::fs::read_to_string("static/index.html").unwrap();
-    Html(file_content)
-}
-
-async fn serve_admin() -> Html<String> {
-    let file_content = std::fs::read_to_string("static/admin.html").unwrap();
-    Html(file_content)
-}
-
-async fn static_file(Path(file): Path<String>) -> axum::response::Response {
-    let file_path = format!("static/{}", file);
-    let file_content = std::fs::read_to_string(file_path).unwrap();
-
-    let file_type = file.split(".").last().unwrap();
-    let mime_type = match file_type {
-        "css" => "text/css",
-        "js" => "application/javascript",
-        "html" => "text/html",
-        "md" => "text/markdown",
-        "json" => "application/json",
-        "txt" => "text/plain",
-        _ => "application/octet-stream",
-    };
-    // 使用正确的 MIME 类型
-    axum::response::Response::builder()
-        .header("Content-Type", mime_type)
-        .body(axum::body::Body::from(file_content))
-        .unwrap()
+    Arc::new(RwLock::new(cache))
 }
 
 // 简单的语言检测逻辑
@@ -135,7 +82,7 @@ fn is_meaningless_message(message: &str) -> bool {
     false
 }
 
-async fn handle_chat(
+pub async fn handle_chat(
     State((agent, _, chat_store)): State<(Arc<RigAgent>, Option<Arc<DocumentStore>>, ChatStore)>,
     Json(payload): Json<ChatRequest>,
 ) -> Json<ChatResponse> {
@@ -165,7 +112,7 @@ async fn handle_chat(
                 history.push(Message::user(message));
                 history.push(Message::assistant(&response));
 
-                // 如果历史记录超过10条，则删除最早的一条
+                // 保存历史记录条数上限
                 if history.len() > 10 {
                     history.remove(0);
                     history.remove(0);
@@ -186,7 +133,7 @@ async fn handle_chat(
     Json(ChatResponse { response, user_id })
 }
 
-async fn get_chat_history(
+pub async fn get_chat_history(
     State((_, _, chat_store)): State<(Arc<RigAgent>, Option<Arc<DocumentStore>>, ChatStore)>,
     Path(user_id): Path<String>,
 ) -> Json<Vec<ChatHistoryItem>> {

@@ -4,3 +4,6 @@ Cargo.lock
 lancedb
 logs
 .DS_Store
+node_modules
+data/backups
+data/users.db

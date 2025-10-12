@@ -4,9 +4,8 @@ use anyhow::Context;
 use rig::prelude::EmbeddingsClient;
 use tracing::{debug, info, warn};
 
-use crate::{agent::rig_agent::RigAgentContext, db::DocumentStore, utils::get_env_or_panic};
-
 use super::rig_agent::RigAgent;
+use crate::{agent::rig_agent::RigAgentContext, db::DocumentStore, utils::get_env_or_panic};
 
 #[derive(Default)]
 pub struct RigAgentBuilder {
@@ -220,14 +219,14 @@ impl RigAgentBuilder {
                 Ok(content) => {
                     info!("✅ Loaded preamble from file: {}", preamble_path);
                     Ok(content)
-                }
+                },
                 Err(e) => {
                     warn!(
                         "⚠️ Failed to read preamble file {}: {}, using default",
                         preamble_path, e
                     );
                     Ok(self.preamble.clone())
-                }
+                },
             }
         } else {
             // 没有设置preamble文件，使用初始化时的preamble
@@ -238,9 +237,7 @@ impl RigAgentBuilder {
 
     /// 初始化文档存储
     async fn initialize_document_store(
-        &self,
-        table_name: &str,
-        embedding_model: rig::providers::openai::EmbeddingModel,
+        &self, table_name: &str, embedding_model: rig::providers::openai::EmbeddingModel,
     ) -> Option<Arc<DocumentStore>> {
         if let Some(store) = &self.document_store {
             debug!("Using provided document store");
@@ -255,9 +252,7 @@ impl RigAgentBuilder {
 
     /// 构建RAG代理 - 使用 RigAgentContext 的公共方法
     async fn build_rag_agent(
-        &self,
-        client: &rig::providers::openai::Client,
-        preamble: &str,
+        &self, client: &rig::providers::openai::Client, preamble: &str,
         document_store: Option<&Arc<DocumentStore>>,
     ) -> anyhow::Result<rig::agent::Agent<rig::providers::openai::CompletionModel>> {
         let context = RigAgentContext {
@@ -272,12 +267,12 @@ impl RigAgentBuilder {
         match document_store {
             Some(store) => {
                 info!("ℹ️ Building RAG agent with document store");
-                Ok(context.build_with_document_store(store).await)
-            }
+                Ok(context.build_with_document_store(store.clone()).await)
+            },
             None => {
                 info!("ℹ️ No document store configured, using basic agent");
                 Ok(context.build())
-            }
+            },
         }
     }
 }

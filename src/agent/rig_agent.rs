@@ -1,11 +1,6 @@
 use std::sync::{Arc, RwLock};
 
-use rig::{
-    agent::Agent,
-    completion::Chat,
-    prelude::CompletionClient,
-    providers::openai::{self},
-};
+use rig::{agent::Agent, completion::Chat, prelude::CompletionClient, providers::openai::{self}};
 
 use super::RigAgentBuilder;
 use crate::db::DocumentStore;
@@ -47,9 +42,7 @@ impl RigAgent {
 
     /// 动态聊天 - 使用当前最新的context构建临时agent进行聊天
     pub async fn dynamic_chat(
-        &self,
-        message: &str,
-        history: Vec<rig::completion::Message>,
+        &self, message: &str, history: Vec<rig::completion::Message>,
     ) -> anyhow::Result<String> {
         // 简化：只要存在向量存储即认为可用
         let has_documents = self.document_store.is_some();
@@ -114,13 +107,13 @@ impl RigAgent {
                         preamble_path
                     );
                     Some(content)
-                }
+                },
                 Err(_) => {
                     tracing::debug!(
                         "No preamble file found or failed to read, using context preamble"
                     );
                     None
-                }
+                },
             }
         };
 
@@ -142,7 +135,7 @@ impl RigAgent {
             };
 
             // 使用文档存储构建RAG agent
-            context.build_with_document_store(store).await
+            context.build_with_document_store(store.clone()).await
         } else {
             // 创建新的context用于构建基础agent
             let context = {
@@ -198,7 +191,7 @@ impl RigAgentContext {
                 Err(e) => {
                     tracing::warn!("⚠️ Failed to count documents: {}, using fallback", e);
                     vector_index.len() // 使用同步方法作为后备
-                }
+                },
             }
         } else {
             0
@@ -218,10 +211,9 @@ impl RigAgentContext {
 
     /// 构建带有文档存储的RAG agent
     pub async fn build_with_document_store(
-        &self,
-        document_store: &crate::db::DocumentStore,
+        &self, document_store: Arc<crate::db::DocumentStore>,
     ) -> Agent<openai::CompletionModel> {
-        let total_docs = self.count_documents(document_store).await;
+        let total_docs = self.count_documents(&document_store).await;
 
         if total_docs == 0 {
             tracing::info!("📋 No documents found in database, using basic agent");
@@ -235,8 +227,8 @@ impl RigAgentContext {
             top_k
         );
 
-        // 创建包装器以避免生命周期问题
-        let store_wrapper = crate::db::DocumentStoreWrapper(Arc::new(document_store.clone()));
+        // 包装为 DocumentStoreRef 以实现 VectorStoreIndex
+        let store_ref = crate::db::DocumentStoreRef::new(document_store);
 
         self.client
             .completion_model(&self.openai_model)
@@ -244,7 +236,7 @@ impl RigAgentContext {
             .into_agent_builder()
             .temperature(self.temperature)
             .preamble(&self.preamble)
-            .dynamic_context(top_k, store_wrapper)
+            .dynamic_context(top_k, store_ref)
             .build()
     }
 }

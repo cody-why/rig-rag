@@ -1,6 +1,6 @@
 # https://doc.rust-lang.org/cargo/reference/manifest.html
 [build]
-target-dir = "/tmp/rustTemp/target"
+target-dir = "/tmp/rustTmp/target"
 # rustflags = ["--cfg", "unsound_local_offset"] # local time
 # rustflags = ["-Zthreads=32", "-Clink-arg=-fuse-ld=mold"] # nightly + mold linker
 # jobs = 16 # cpus

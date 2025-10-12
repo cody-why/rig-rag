@@ -1,0 +1,11 @@
+{
+  "name": "rig-rag-frontend",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "build": "NODE_PATH=$(npm root -g) node frontend/build-terser.js"
+  },
+  "devDependencies": {
+    "terser": "^5.44.0"
+  }
+}

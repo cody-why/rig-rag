@@ -3,12 +3,21 @@
 Rig Chat 是一个使用 Tailwind CSS 构建的前端聊天 UI 组件，提供了完整的聊天界面和可嵌入式组件。
 
 ## 文件结构
+```
+frontend/
+├── js/                 # 原始js文件
+|   ├── chatbot.js        # 可嵌入式聊天组件
+|   ├── admin.js          # 管理员界面
+|   ├── login.js          # 登录界面
+```
 
 ```
 static/
 ├── index.html          # 完整的聊天界面
-├── chatbot.js          # 可嵌入式聊天组件
-└── chatbot-embed.html  # 嵌入示例
+├── admin.html          # 管理员界面
+├── login.html          # 登录界面
+├── js/                 # 压缩后的js文件
+
 ```
 
 ## 使用方法
@@ -23,7 +32,7 @@ static/
 2. 在目标网站中添加以下代码：
 
 ```html
-<script src="/static/chatbot.js"></script>
+<script src="/static/js/chatbot.js"></script>
 <script>
    // 创建聊天组件实例
    const chatbot = new RigChat({
@@ -38,7 +47,6 @@ static/
 </script>
 ```
 
-查看 `chatbot-embed.html` 了解更多嵌入选项和示例。
 
 
 ## 特性
