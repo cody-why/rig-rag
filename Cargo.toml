@@ -6,13 +6,13 @@ edition = "2024"
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 # git="https://github.com/0xPlaygrounds/rig"
-rig-core = { version = "0.21", features = ["all", "reqwest-rustls"], default-features = false }
+rig-core = { version = "0.22", features = ["derive", "rayon", "reqwest-rustls"], default-features = false }
 rig-derive = "0.1"
-rig-lancedb = "0.2"
 
-lancedb = "0.21"
-arrow-array = "55.2"
-
+rig-lancedb = { version = "0.2", features = ["rig-rustls"], default-features = false }
+# rig-lancedb = { version = "=0.2.23", default-features = false }
+lancedb = { version = "0.21"}
+arrow-array = "55"
 
 chrono = { version = "0.4", features = ["serde"] }
 dotenv = "0.15"
@@ -20,6 +20,7 @@ anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 nanoid = "0.4"
+thiserror = "2"
 
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["time"] }
@@ -29,17 +30,18 @@ time = { version = "0.3" }
 axum = { version = "0.8", features = ["multipart"] }
 tower-http = { version = "0.6", features = ["cors", "limit"] }
 tower = "0.5"
-tower_governor = { version = "0.8", features = ["axum"], default-features = false }
+tower_governor = { version = "0.8", features = ["axum"] }
 
 # Database for user management
-sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "migrate"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "tls-none"] }
 
 # Authentication
 jsonwebtoken = { version = "10", features = ["rust_crypto"] }
 bcrypt = "0.17"
 
 mini-moka = "0.10"
-futures = "0.3.31"
+futures = "0.3"
+# reqwest = { version = "0.12", features = ["json","rustls-tls"], default-features = false }
 
 # Document parsing
 pdf-extract = "0.10"
@@ -50,6 +52,8 @@ quick-xml = "0.38"
 encoding_rs = "0.8"
 chardetng = "0.1"
 
+# 交叉编译不需要系统的 OpenSSL, rig-lancedb 依赖
+# openssl = { version = "0.10", features = ["vendored"] }
 
 [lints.clippy]
 new_without_default = "allow"

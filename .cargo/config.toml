@@ -1,6 +1,6 @@
 # https://doc.rust-lang.org/cargo/reference/manifest.html
 [build]
-target-dir = "/tmp/rustTmp/target"
+target-dir = "/tmp/rustTmp/target2"
 # rustflags = ["--cfg", "unsound_local_offset"] # local time
 # rustflags = ["-Zthreads=32", "-Clink-arg=-fuse-ld=mold"] # nightly + mold linker
 # jobs = 16 # cpus
@@ -10,19 +10,9 @@ target-dir = "/tmp/rustTmp/target"
 [env]
 
 
-[alias]
-# test = "test -- --nocapture"
-
-
-[lints.clippy]
-new_without_default = "allow"
-single_match = "allow"
-uninlined_format_args = "allow"
-redundant_clone = "deny"
-
 
 [profile.release]
-opt-level = 's'
+opt-level = 'z'
 lto = "thin"
 # codegen-units = 8
 panic = "abort"

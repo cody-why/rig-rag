@@ -194,13 +194,11 @@ impl RigAgentBuilder {
 
         let client = Client::builder(&self.openai_api_key)
             .base_url(&self.openai_base_url)
-            .build()
-            .context("Failed to create OpenAI completion client")?;
+            .build();
 
         let embedding_client = Client::builder(&self.embedding_api_key)
             .base_url(&self.embedding_url)
-            .build()
-            .context("Failed to create OpenAI embedding client")?;
+            .build();
 
         let model = embedding_client.embedding_model(&self.embedding_model);
 

@@ -4,12 +4,11 @@ use axum::{Router, extract::{Json, Multipart, Path, Query, State}, http::StatusC
 use serde::{Deserialize, Serialize};
 use tracing::{error, info, warn};
 
-use crate::utils::DocumentParser;
-use crate::web::ChatStore;
 use crate::{agent::RigAgent, db::{Document, DocumentStore}};
+use crate::{utils::DocumentParser, web::ChatStore};
 
 // State 类型别名
-type AppState = (Arc<RigAgent>, Option<Arc<DocumentStore>>, ChatStore);
+pub type AppState = (Arc<RigAgent>, Option<Arc<DocumentStore>>, ChatStore);
 
 #[derive(Debug, Deserialize)]
 pub struct CreateDocumentRequest {
@@ -153,15 +152,24 @@ async fn get_document(
 
 async fn create_document(
     State((agent, document_store, _)): State<AppState>, Json(req): Json<CreateDocumentRequest>,
-) -> Result<ResponseJson<DocumentResponse>, StatusCode> {
+) -> Response {
     info!("Creating document");
 
     match document_store {
         Some(store) =>
-            process_and_save_document(agent, store, &req.filename, &req.content, "Created").await,
+            process_and_save_document(agent, store, &req.filename, &req.content, "Created")
+                .await
+                .map_err(|(status, error)| (status, ResponseJson(ErrorResponse { error })))
+                .into_response(),
         None => {
             error!("Document store not available");
-            Err(StatusCode::SERVICE_UNAVAILABLE)
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                ResponseJson(ErrorResponse {
+                    error: "文档存储服务不可用".to_string(),
+                }),
+            )
+                .into_response()
         },
     }
 }
@@ -238,7 +246,7 @@ async fn update_document(
 }
 
 async fn delete_document(
-    State((_agent, document_store, _)): State<AppState>, Path(id): Path<String>,
+    State((agent, document_store, _)): State<AppState>, Path(id): Path<String>,
 ) -> Result<StatusCode, StatusCode> {
     info!("Deleting document: {}", id);
     match document_store {
@@ -280,6 +288,12 @@ async fn delete_document(
                                         );
                                     },
                                 }
+                            }
+
+                            // 🔧 标记agent需要重建以排除已删除的文档
+                            if let Ok(mut context) = agent.context.write() {
+                                context.needs_rebuild = true;
+                                info!("Marked agent for rebuild due to document deletion");
                             }
 
                             Ok(StatusCode::NO_CONTENT)
@@ -383,25 +397,23 @@ async fn upload_document(
 
             let file_data = file_data.unwrap();
 
-            // 检查文件类型是否支持
-            if !DocumentParser::is_supported(&filename) {
-                error!("Unsupported file type: {}", filename);
-
-                let supported = DocumentParser::supported_extensions().join(", ");
-                return (
-                    StatusCode::UNSUPPORTED_MEDIA_TYPE,
-                    ResponseJson(ErrorResponse {
-                        error: format!("不支持的文件类型。支持的格式：{}", supported),
-                    }),
-                )
-                    .into_response();
-            }
-
             // 解析文档内容
             let content = match DocumentParser::parse(&filename, file_data).await {
                 Ok(text) => text,
                 Err(e) => {
                     error!("Failed to parse document {}: {}", filename, e);
+
+                    if e.to_string().contains("Unsupported file type") {
+                        let supported = DocumentParser::supported_extensions().join(", ");
+                        return (
+                            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                            ResponseJson(ErrorResponse {
+                                error: format!("不支持的文件类型。支持的格式：{}", supported),
+                            }),
+                        )
+                            .into_response();
+                    }
+
                     return (
                         StatusCode::BAD_REQUEST,
                         ResponseJson(ErrorResponse {
@@ -418,18 +430,12 @@ async fn upload_document(
                 content.len()
             );
 
-            // 调用公共函数处理文档
+            // 处理文档
             match process_and_save_document(agent, store, &filename, &content, "Uploaded").await {
                 Ok(response) => response.into_response(),
                 Err(status) => {
-                    error!("Failed to upload document");
-                    (
-                        status,
-                        ResponseJson(ErrorResponse {
-                            error: "保存文档失败".to_string(),
-                        }),
-                    )
-                        .into_response()
+                    error!("Failed to upload document: {}", status.1);
+                    (status.0, ResponseJson(ErrorResponse { error: status.1 })).into_response()
                 },
             }
         },
@@ -477,19 +483,32 @@ async fn reset_documents(
 }
 
 /// 处理并保存文档（包含分块、embedding、备份）
-///
-/// 这是处理文档的公共函数，被 create_document 和 upload_document 复用
 async fn process_and_save_document(
     agent: Arc<RigAgent>,
     document_store: Arc<DocumentStore>,
     filename: &str,
     content: &str,
     action: &str, // "Created" 或 "Uploaded"
-) -> Result<ResponseJson<DocumentResponse>, StatusCode> {
+) -> Result<ResponseJson<DocumentResponse>, (StatusCode, String)> {
+    // 检查文件是否为空
+    if content.trim().is_empty() {
+        warn!("⚠️ Attempted to upload empty file: {}", filename);
+        return Err((StatusCode::BAD_REQUEST, "文件内容不能为空".to_string()));
+    }
+
     // 将文档内容分块处理，避免超过embedding模型的token限制
     const CHUNK_SIZE: usize = 12000;
     let chunks = chunk_document(content, CHUNK_SIZE);
     let total_chunks = chunks.len();
+
+    // 双重检查：确保chunks不为空
+    if total_chunks == 0 {
+        error!(
+            "Document '{}' resulted in 0 chunks after processing",
+            filename
+        );
+        return Err((StatusCode::BAD_REQUEST, "文件内容不能为空".to_string()));
+    }
 
     info!("Split document '{}' into {} chunks", filename, total_chunks);
 
@@ -504,16 +523,18 @@ async fn process_and_save_document(
             } else {
                 filename.to_string()
             };
+            let id = if total_chunks == 1 {
+                base_id.clone()
+            } else {
+                format!("{}-{}", base_id, idx)
+            };
+            let timestamp = chrono::Utc::now();
             Document {
-                id: if total_chunks == 1 {
-                    base_id.clone()
-                } else {
-                    format!("{}-{}", base_id, idx)
-                },
+                id,
                 content: chunk_content,
                 source,
-                created_at: chrono::Utc::now(),
-                updated_at: chrono::Utc::now(),
+                created_at: timestamp,
+                updated_at: timestamp,
             }
         })
         .collect();
@@ -562,7 +583,10 @@ async fn process_and_save_document(
         },
         Err(e) => {
             error!("Failed to {} document: {}", action.to_lowercase(), e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "保存文档失败".to_string(),
+            ))
         },
     }
 }
@@ -572,8 +596,10 @@ async fn process_and_save_document(
 /// 这个函数将大文档分成小块，避免超过embedding模型的token限制
 /// 特别处理：识别并保持 Markdown 表格的完整性，不在表格中间截断
 fn chunk_document(text: &str, chunk_size: usize) -> Vec<String> {
-    let mut chunks = Vec::new();
-    let mut current_chunk = String::new();
+    // 预分配合理容量
+    let estimated_chunks = (text.len() / chunk_size).max(1);
+    let mut chunks = Vec::with_capacity(estimated_chunks);
+    let mut current_chunk = String::with_capacity(chunk_size);
     let mut current_size = 0;
 
     // 首先将文本分成段落
@@ -809,7 +835,7 @@ fn is_table_start(lines: &[&str], index: usize) -> bool {
 
 /// 收集完整的表格内容
 fn collect_table(lines: &[&str], start: usize) -> (String, usize) {
-    let mut table_lines = Vec::new();
+    let mut table_lines = Vec::with_capacity(32);
     let mut i = start;
 
     // 向后找表格开始（如果start不是真正的开始）
@@ -857,7 +883,8 @@ fn split_large_table(table_text: &str, chunk_size: usize) -> Vec<String> {
         return vec![table_text.to_string()];
     }
 
-    let mut chunks = Vec::new();
+    let estimated_chunks = (table_text.len() / chunk_size).max(1);
+    let mut chunks = Vec::with_capacity(estimated_chunks);
 
     // 前两行通常是表头和分隔符
     let header_lines = if lines.len() >= 2 {

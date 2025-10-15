@@ -4,11 +4,20 @@ use axum::{Router, extract::Path, http::{HeaderValue, Method}, middleware, respo
 use tower_governor::{GovernorLayer, governor::GovernorConfigBuilder};
 use tower_http::cors::CorsLayer;
 
-use crate::{agent::RigAgent, db::{DocumentStore, UserStore}, web::{create_auth_router, create_chat_router, create_chat_store, create_user_router, require_admin_auth_middleware, require_user_auth_middleware}};
+use crate::{agent::RigAgent, db::{ConversationStore, DocumentStore, UserStore}, web::*};
 
 pub async fn create_router(
     agent: Arc<RigAgent>, document_store: Option<Arc<DocumentStore>>, user_store: Arc<UserStore>,
 ) -> Router {
+    // 初始化对话存储
+    let conversation_db_path = std::env::var("CONVERSATION_DB_PATH")
+        .unwrap_or_else(|_| "sqlite:data/conversations.db?mode=rwc".to_string());
+
+    let conversation_store = Arc::new(
+        ConversationStore::new(&conversation_db_path)
+            .await
+            .expect("Failed to initialize conversation store"),
+    );
     let server_url = "*";
     let cors = CorsLayer::new()
         .allow_origin(server_url.parse::<HeaderValue>().unwrap())
@@ -56,18 +65,36 @@ pub async fn create_router(
         )) // 文档上传限制
         .route_layer(middleware::from_fn(require_admin_auth_middleware));
 
-    // 合并所有路由 - 先创建需要AppState的路由组，然后与独立state的路由合并
-    let app_state_router = create_chat_router()
+    // 分别创建不同状态的路由
+    let chat_router = create_chat_router()
         .layer(tower_http::limit::RequestBodyLimitLayer::new(10 * 1024)) // 聊天消息限制为10KB
         .layer(GovernorLayer::new(chat_governor_conf)) // 基于IP的频率限制
-        .merge(user_query_router)
-        .merge(admin_mutation_router)
-        .with_state((agent, document_store, chat_store));
+        .with_state((
+            agent.clone(),
+            document_store.clone(),
+            chat_store.clone(),
+            conversation_store.clone(),
+        ));
+
+    let conversation_router = create_conversation_router().with_state((
+        agent.clone(),
+        document_store.clone(),
+        conversation_store,
+    ));
+
+    let user_query_router_with_state =
+        user_query_router.with_state((agent.clone(), document_store.clone(), chat_store.clone()));
+
+    let admin_mutation_router_with_state =
+        admin_mutation_router.with_state((agent, document_store, chat_store));
 
     // 合并所有路由组
-    app_state_router
-        .merge(public_router)
+    public_router
         .merge(auth_user_router)
+        .merge(chat_router)
+        .merge(conversation_router)
+        .merge(user_query_router_with_state)
+        .merge(admin_mutation_router_with_state)
         .layer(cors)
 }
 

@@ -62,7 +62,8 @@ rig-rag/
 ```
 
 ```bash
-npm install -g terser
+# 全局安装: npm install -g terser
+# 本地安装: npm install terser
 npm run build
 ```
 

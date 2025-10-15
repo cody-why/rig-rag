@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::io::{Cursor, Read};
 
 use anyhow::{Context, Result, anyhow};
@@ -78,9 +79,9 @@ impl DocumentParser {
             .by_name("word/document.xml")
             .context("找不到document.xml")?;
 
-        let mut xml_content = String::new();
+        let mut xml_content = Vec::new();
         document_xml
-            .read_to_string(&mut xml_content)
+            .read_to_end(&mut xml_content)
             .context("读取document.xml失败")?;
 
         // 解析 XML
@@ -88,20 +89,21 @@ impl DocumentParser {
     }
 
     /// 解析 DOCX XML 内容
-    fn parse_docx_xml(xml: &str) -> Result<String> {
-        let mut reader = XmlReader::from_str(xml);
+    fn parse_docx_xml(xml: &[u8]) -> Result<String> {
+        let mut reader = XmlReader::from_reader(Cursor::new(xml));
         reader.config_mut().trim_text(true);
 
-        let mut result = Vec::new();
-        let mut current_paragraph = Vec::new();
-        let mut current_table: Vec<Vec<String>> = Vec::new();
-        let mut current_row: Vec<String> = Vec::new();
-        let mut current_cell = String::new();
+        // 预分配容量以减少重新分配
+        let mut result = Vec::with_capacity(128);
+        let mut current_paragraph = String::with_capacity(512);
+        let mut current_table: Vec<Vec<String>> = Vec::with_capacity(32);
+        let mut current_row: Vec<String> = Vec::with_capacity(16);
+        let mut current_cell = String::with_capacity(128);
         let mut in_table = false;
         let mut in_row = false;
         let mut in_cell = false;
         let mut in_field = false; // 是否在域代码中
-        let mut buf = Vec::new();
+        let mut buf = Vec::with_capacity(256);
 
         loop {
             match reader.read_event_into(&mut buf) {
@@ -174,10 +176,11 @@ impl DocumentParser {
                     } else if name_bytes.ends_with(b"p") && !in_table {
                         // 段落结束（非表格内）
                         if !current_paragraph.is_empty() {
-                            let text = current_paragraph.join("");
-                            if !text.trim().is_empty() {
-                                result.push(text.trim().to_string());
+                            let trimmed = current_paragraph.trim();
+                            if !trimmed.is_empty() {
+                                result.push(trimmed.to_string());
                             }
+                            current_paragraph.clear();
                         }
                     }
                 },
@@ -187,12 +190,13 @@ impl DocumentParser {
                         continue;
                     }
 
-                    let text = e.decode().unwrap_or_default().to_string();
+                    // 使用 Cow 避免不必要的分配
+                    let text = e.decode().unwrap_or_default();
 
                     if in_cell {
                         current_cell.push_str(&text);
                     } else if !in_table {
-                        current_paragraph.push(text);
+                        current_paragraph.push_str(&text);
                     }
                 },
                 Ok(Event::Eof) => break,
@@ -211,8 +215,6 @@ impl DocumentParser {
             return String::new();
         }
 
-        let mut result = Vec::new();
-
         // 获取最大列数
         let max_cols = table.iter().map(|row| row.len()).max().unwrap_or(0);
 
@@ -220,30 +222,47 @@ impl DocumentParser {
             return String::new();
         }
 
+        // 预估容量：每行约 50 字符
+        let estimated_capacity = table.len() * 50 * max_cols;
+        let mut result = String::with_capacity(estimated_capacity);
+
         // 生成表格行
         for (idx, row) in table.iter().enumerate() {
-            // 补齐列数
-            let mut cells = row.clone();
-            while cells.len() < max_cols {
-                cells.push(String::new());
+            result.push_str("| ");
+
+            // 输出单元格
+            for col_idx in 0..max_cols {
+                if col_idx > 0 {
+                    result.push_str(" | ");
+                }
+
+                if let Some(cell) = row.get(col_idx) {
+                    // 转义 Markdown 特殊字符 - 使用 Cow 避免不必要的分配
+                    let escaped = if cell.contains('|') || cell.contains('\n') {
+                        Cow::Owned(cell.replace('|', "\\|").replace('\n', " "))
+                    } else {
+                        Cow::Borrowed(cell.as_str())
+                    };
+                    result.push_str(&escaped);
+                }
             }
 
-            // 转义 Markdown 特殊字符
-            let cells: Vec<String> = cells
-                .iter()
-                .map(|c| c.replace('|', "\\|").replace('\n', " "))
-                .collect();
-
-            // 输出表格行
-            result.push(format!("| {} |", cells.join(" | ")));
+            result.push_str(" |\n");
 
             // 第一行后添加分隔线
             if idx == 0 {
-                result.push(format!("| {} |", vec!["---"; max_cols].join(" | ")));
+                result.push_str("| ");
+                for col_idx in 0..max_cols {
+                    if col_idx > 0 {
+                        result.push_str(" | ");
+                    }
+                    result.push_str("---");
+                }
+                result.push_str(" |\n");
             }
         }
 
-        result.join("\n")
+        result
     }
 
     /// 解析 XLSX 文件，输出为 Markdown 格式
@@ -255,7 +274,8 @@ impl DocumentParser {
         let mut workbook: Xlsx<_> =
             Xlsx::new(cursor).map_err(|e| anyhow!("Failed to parse XLSX: {:?}", e))?;
 
-        let mut all_text = Vec::new();
+        // 预分配容量
+        let mut all_text = String::with_capacity(4096);
 
         // 获取所有工作表名称
         let sheet_names = workbook.sheet_names().to_vec();
@@ -265,7 +285,9 @@ impl DocumentParser {
             // 读取工作表范围数据
             if let Ok(range) = workbook.worksheet_range(&sheet_name) {
                 // 添加工作表标题（Markdown H2）
-                all_text.push(format!("\n## {}\n", sheet_name));
+                all_text.push_str("\n## ");
+                all_text.push_str(&sheet_name);
+                all_text.push_str("\n\n");
 
                 let rows: Vec<Vec<String>> = range
                     .rows()
@@ -283,31 +305,41 @@ impl DocumentParser {
                     continue;
                 }
 
-                // 生成 Markdown 表格
+                // 生成 Markdown 表格 - 直接写入 String
                 for (idx, row) in rows.iter().enumerate() {
-                    // 补齐列数
-                    let mut row_cells = row.clone();
-                    while row_cells.len() < max_cols {
-                        row_cells.push(String::new());
+                    all_text.push_str("| ");
+
+                    for col_idx in 0..max_cols {
+                        if col_idx > 0 {
+                            all_text.push_str(" | ");
+                        }
+
+                        if let Some(cell) = row.get(col_idx) {
+                            all_text.push_str(cell);
+                        }
                     }
 
-                    // 输出表格行
-                    let row_text = format!("| {} |", row_cells.join(" | "));
-                    all_text.push(row_text);
+                    all_text.push_str(" |\n");
 
                     // 第一行后添加分隔线
                     if idx == 0 {
-                        let separator = format!("| {} |", vec!["---"; max_cols].join(" | "));
-                        all_text.push(separator);
+                        all_text.push_str("| ");
+                        for col_idx in 0..max_cols {
+                            if col_idx > 0 {
+                                all_text.push_str(" | ");
+                            }
+                            all_text.push_str("---");
+                        }
+                        all_text.push_str(" |\n");
                     }
                 }
 
                 // 工作表之间添加空行
-                all_text.push(String::new());
+                all_text.push('\n');
             }
         }
 
-        let result = all_text.join("\n");
+        let result = all_text;
 
         if result.trim().is_empty() {
             Err(anyhow!("XLSX 文件为空或无法提取文本"))
@@ -318,8 +350,10 @@ impl DocumentParser {
 
     /// 格式化文本为 Markdown 格式
     fn format_text_to_markdown(text: &str) -> String {
-        let mut result = Vec::new();
+        // 预分配容量
+        let mut result = String::with_capacity(text.len() + text.len() / 10);
         let mut prev_line_empty = false;
+        let mut is_first_line = true;
 
         for line in text.lines() {
             let trimmed = line.trim();
@@ -327,16 +361,16 @@ impl DocumentParser {
             // 跳过多余的空行
             if trimmed.is_empty() {
                 if !prev_line_empty {
-                    result.push(String::new());
+                    if !is_first_line {
+                        result.push('\n');
+                    }
                     prev_line_empty = true;
                 }
                 continue;
             }
 
-            prev_line_empty = false;
-
             // 检测可能的标题（短行且不以标点结尾）
-            if trimmed.len() < 60
+            let is_potential_title = trimmed.len() < 60
                 && !trimmed.ends_with('。')
                 && !trimmed.ends_with('.')
                 && !trimmed.ends_with(',')
@@ -346,21 +380,23 @@ impl DocumentParser {
                 && !trimmed.starts_with('-')
                 && !trimmed.starts_with('*')
                 && !trimmed.starts_with('#')
-                && result.last().is_none_or(|l: &String| l.is_empty())
-            {
-                // 如果前一行是空行，可能是标题
-                result.push(format!("## {}", trimmed));
-            } else {
-                result.push(trimmed.to_string());
+                && prev_line_empty;
+
+            if !is_first_line {
+                result.push('\n');
             }
+
+            if is_potential_title {
+                result.push_str("## ");
+            }
+
+            result.push_str(trimmed);
+
+            prev_line_empty = false;
+            is_first_line = false;
         }
 
-        // 清理结尾的空行
-        while result.last().is_some_and(|l| l.is_empty()) {
-            result.pop();
-        }
-
-        result.join("\n")
+        result
     }
 
     /// 将单元格转换为字符串
@@ -438,11 +474,6 @@ impl DocumentParser {
         }
 
         Ok(decoded.into_owned())
-    }
-
-    /// 检查文件是否支持
-    pub fn is_supported(filename: &str) -> bool {
-        DocumentType::from_filename(filename).is_some()
     }
 
     /// 获取支持的文件扩展名列表

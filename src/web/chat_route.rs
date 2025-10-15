@@ -7,11 +7,17 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use tracing::{error, info};
 
-use crate::{agent::RigAgent, db::DocumentStore};
+use crate::{agent::RigAgent, db::{ConversationStore, CreateMessageRequest, DocumentStore, MessageRole}};
 
 pub type UserId = String;
 pub type ChatHistory = Vec<Message>;
 pub type ChatStore = Arc<RwLock<Cache<UserId, ChatHistory>>>;
+pub type ChatAppState = (
+    Arc<RigAgent>,
+    Option<Arc<DocumentStore>>,
+    ChatStore,
+    Arc<ConversationStore>,
+);
 
 #[derive(Debug, Deserialize)]
 pub struct ChatRequest {
@@ -31,7 +37,7 @@ pub struct ChatHistoryItem {
     content: String,
 }
 
-pub fn create_chat_router() -> Router<(Arc<RigAgent>, Option<Arc<DocumentStore>>, ChatStore)> {
+pub fn create_chat_router() -> Router<ChatAppState> {
     Router::new()
         .route("/api/chat", post(handle_chat))
         .route("/api/history/{user_id}", get(get_chat_history))
@@ -83,42 +89,78 @@ fn is_meaningless_message(message: &str) -> bool {
 }
 
 pub async fn handle_chat(
-    State((agent, _, chat_store)): State<(Arc<RigAgent>, Option<Arc<DocumentStore>>, ChatStore)>,
+    State((agent, _, chat_store, conversation_store)): State<ChatAppState>,
     Json(payload): Json<ChatRequest>,
 ) -> Json<ChatResponse> {
     // 从请求中获取用户 ID 或生成一个新的
     let user_id = payload.user_id.unwrap_or_else(generate_user_id);
     let message = payload.message.trim();
 
-    // 获取用户的聊天历史
+    info!("Received chat request from user {}: {}", user_id, message);
+
+    // 从内存缓存获取聊天历史
     let chat_history = {
         let chat_store = chat_store.read().await;
         chat_store.get(&user_id).unwrap_or_default()
     };
 
-    info!("Received chat request from user {}: {}", user_id, message);
-
     // 使用 RigAgent 处理聊天请求
     let response = match agent.dynamic_chat(message, chat_history).await {
         Ok(response) => {
             if !is_meaningless_message(message) {
-                // 将用户消息和 AI 响应添加到历史记录
-                let chat_store = chat_store.write().await;
+                // 更新内存缓存
+                {
+                    let chat_store_write = chat_store.write().await;
+                    let mut history = chat_store_write.get(&user_id).unwrap_or_default();
 
-                // 获取当前历史记录，如果不存在则创建新的
-                let mut history = chat_store.get(&user_id).unwrap_or_default();
+                    // 添加用户消息和 AI 响应到历史记录
+                    history.push(Message::user(message));
+                    history.push(Message::assistant(&response));
 
-                // 添加用户消息和 AI 响应到历史记录
-                history.push(Message::user(message));
-                history.push(Message::assistant(&response));
+                    // 保存历史记录条数上限
+                    if history.len() > 10 {
+                        history.remove(0);
+                        history.remove(0);
+                    }
 
-                // 保存历史记录条数上限
-                if history.len() > 10 {
-                    history.remove(0);
-                    history.remove(0);
+                    chat_store_write.insert(user_id.clone(), history);
                 }
 
-                chat_store.insert(user_id.clone(), history);
+                // 获取或创建活跃对话用于数据库存储
+                let conversation = match conversation_store
+                    .get_or_create_active_conversation(&user_id)
+                    .await
+                {
+                    Ok(conv) => conv,
+                    Err(e) => {
+                        error!("Failed to get or create conversation for DB storage: {}", e);
+                        return Json(ChatResponse { response, user_id });
+                    },
+                };
+
+                // 保存用户消息到数据库
+                let user_message_req = CreateMessageRequest {
+                    conversation_id: conversation.id.clone(),
+                    role: MessageRole::User,
+                    content: message.to_string(),
+                    metadata: None,
+                };
+
+                if let Err(e) = conversation_store.add_message(user_message_req).await {
+                    error!("Failed to save user message to database: {}", e);
+                }
+
+                // 保存AI响应到数据库
+                let assistant_message_req = CreateMessageRequest {
+                    conversation_id: conversation.id.clone(),
+                    role: MessageRole::Assistant,
+                    content: response.clone(),
+                    metadata: None,
+                };
+
+                if let Err(e) = conversation_store.add_message(assistant_message_req).await {
+                    error!("Failed to save assistant message to database: {}", e);
+                }
             }
 
             info!("Chat response for user {}: {}", user_id, response);
@@ -134,8 +176,7 @@ pub async fn handle_chat(
 }
 
 pub async fn get_chat_history(
-    State((_, _, chat_store)): State<(Arc<RigAgent>, Option<Arc<DocumentStore>>, ChatStore)>,
-    Path(user_id): Path<String>,
+    State((_, _, chat_store, _)): State<ChatAppState>, Path(user_id): Path<String>,
 ) -> Json<Vec<ChatHistoryItem>> {
     let chat_store = chat_store.read().await;
 

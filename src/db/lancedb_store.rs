@@ -6,6 +6,7 @@ use chrono::{DateTime, Utc};
 use futures::TryStreamExt;
 use lancedb::arrow::arrow_schema::{DataType, Field, Fields, Schema, TimeUnit};
 use lancedb::query::{ExecutableQuery, QueryBase};
+use lancedb::table::OptimizeAction;
 use rig::embeddings::Embedding;
 use rig::{Embed, OneOrMany, embeddings::{EmbeddingModel, EmbeddingsBuilder}, vector_store::VectorStoreIndex, vector_store::request::VectorSearchRequest};
 use rig_lancedb::{LanceDbVectorIndex, SearchParams};
@@ -95,6 +96,11 @@ impl<M: EmbeddingModel> DocumentStore<M> {
             table_name: table_name.to_string(),
             vector_index: RwLock::new(None),
         }
+    }
+
+    /// 检查向量索引是否已加载
+    pub async fn is_index_loaded(&self) -> bool {
+        self.vector_index.read().await.is_some()
     }
 
     /// 加载已存在的向量索引
@@ -555,6 +561,20 @@ impl<M: EmbeddingModel> DocumentStore<M> {
             "Successfully deleted document(s) with condition: {}",
             query_condition
         );
+
+        // LanceDB 的 delete 操作默认是软删除（标记删除）
+        // 需要调用 optimize 来物理删除数据，压缩文件，并重建索引
+        info!("🔄 Optimizing table to physically remove deleted documents...");
+        let _stats = table
+            .optimize(OptimizeAction::All)
+            .await
+            .context("Failed to optimize table after deletion")?;
+        info!("✅ Table optimized, deleted documents physically removed");
+
+        // 🔧 清空向量索引，强制下次使用时重新加载
+        *self.vector_index.write().await = None;
+        info!("🔄 Cleared vector index, will rebuild on next search or agent rebuild");
+
         Ok(())
     }
 

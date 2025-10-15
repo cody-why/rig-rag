@@ -213,6 +213,17 @@ impl RigAgentContext {
     pub async fn build_with_document_store(
         &self, document_store: Arc<crate::db::DocumentStore>,
     ) -> Agent<openai::CompletionModel> {
+        // 🔧 重建时检查并重新加载向量索引（如果被清空）
+        if !document_store.is_index_loaded().await {
+            tracing::info!("🔄 Vector index is empty, reloading...");
+            if let Err(e) = document_store
+                .load_existing_index(self.embedding_model.clone())
+                .await
+            {
+                tracing::warn!("⚠️ Failed to reload vector index: {}", e);
+            }
+        }
+
         let total_docs = self.count_documents(&document_store).await;
 
         if total_docs == 0 {

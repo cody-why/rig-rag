@@ -290,6 +290,7 @@
             <button class="nav-item active" onclick="showSection('documents')">📄 文档管理</button>
             <button class="nav-item" onclick="showSection('upload')">📤 上传文档</button>
             <button class="nav-item" onclick="showSection('preamble')">⚙️ Preamble配置</button>
+            <button class="nav-item" onclick="showSection('conversations')">💬 对话记录</button>
             <button class="nav-item" onclick="showSection('users')">👥 用户管理</button>
         </div>
 
@@ -374,6 +375,54 @@
                     <p>正在加载用户...</p>
                 </div>
                 <div id="usersList"></div>
+            </div>
+
+            <!-- 对话记录管理 -->
+            <div id="conversations" class="section">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                    <h2 style="margin: 0; font-size: 1.25rem; line-height: 1.2;">💬 对话记录管理</h2>
+                    <div style="display: flex; gap: 10px;">
+                        <input type="text" id="conversationSearch" class="form-control form-control-sm" 
+                               placeholder="搜索用户ID或对话ID..." style="width: 200px; height: 32px; padding: 0px 8px; font-size: 16px; border-radius: 6px;">
+                        <button class="btn btn-secondary" style="height: 32px; padding: 0px 18px;" onclick="searchConversations()">🔍 搜索</button>
+                        <button class="btn btn-primary" style="height: 32px; padding: 0px 18px;" onclick="loadConversations()">🔄 刷新</button>
+                        <button class="btn btn-danger" style="height: 32px; padding: 0px 18px;" onclick="showCleanupDialog()">🗑️ 清理旧记录</button>
+                    </div>
+                </div>
+                
+                <!-- 统计信息 -->
+                <div id="conversationStats" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 20px;">
+                    <div style="background: #f8f9fa; padding: 15px; border-radius: 10px; text-align: center;">
+                        <h3 style="margin: 0; color: #667eea;">总对话数</h3>
+                        <p id="totalConversations" style="margin: 5px 0; font-size: 1.5rem; font-weight: bold;">-</p>
+                    </div>
+                    <div style="background: #f8f9fa; padding: 15px; border-radius: 10px; text-align: center;">
+                        <h3 style="margin: 0; color: #667eea;">活跃对话</h3>
+                        <p id="activeConversations" style="margin: 5px 0; font-size: 1.5rem; font-weight: bold;">-</p>
+                    </div>
+                    <div style="background: #f8f9fa; padding: 15px; border-radius: 10px; text-align: center;">
+                        <h3 style="margin: 0; color: #667eea;">总消息数</h3>
+                        <p id="totalMessages" style="margin: 5px 0; font-size: 1.5rem; font-weight: bold;">-</p>
+                    </div>
+                    <div style="background: #f8f9fa; padding: 15px; border-radius: 10px; text-align: center;">
+                        <h3 style="margin: 0; color: #667eea;">今日新增</h3>
+                        <p id="todayConversations" style="margin: 5px 0; font-size: 1.5rem; font-weight: bold;">-</p>
+                    </div>
+                </div>
+
+                <div class="loading" id="conversationsLoading">
+                    <div class="spinner"></div>
+                    <p>正在加载对话记录...</p>
+                </div>
+                
+                <div id="conversationsList" style="display: grid; gap: 15px;"></div>
+                
+                <!-- 分页 -->
+                <div id="conversationPagination" class="pagination" style="display: none; margin-top: 20px; text-align: center;">
+                    <button id="conversationPrevPage" class="btn btn-secondary" disabled>⬅️ 上一页</button>
+                    <span id="conversationPageInfo" style="margin: 0 15px; color: #6c757d;"></span>
+                    <button id="conversationNextPage" class="btn btn-secondary" disabled>下一页 ➡️</button>
+                </div>
             </div>
         </div>
     </div>
