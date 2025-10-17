@@ -6,11 +6,7 @@ use tracing::{error, info, warn};
 
 use crate::{agent::RigAgent, db::{Conversation, ConversationMessage, ConversationStats, ConversationStatus, ConversationStore, CreateMessageRequest, DocumentStore, MessageRole, UserInteractionStats}};
 
-type AppState = (
-    Arc<RigAgent>,
-    Option<Arc<DocumentStore>>,
-    Arc<ConversationStore>,
-);
+type AppState = (Arc<RigAgent>, Arc<DocumentStore>, Arc<ConversationStore>);
 
 /// 对话聊天请求
 #[derive(Debug, Deserialize)]

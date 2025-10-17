@@ -8,7 +8,7 @@ use crate::{agent::RigAgent, db::{Document, DocumentStore}};
 use crate::{utils::DocumentParser, web::ChatStore};
 
 // State 类型别名
-pub type AppState = (Arc<RigAgent>, Option<Arc<DocumentStore>>, ChatStore);
+pub type AppState = (Arc<RigAgent>, Arc<DocumentStore>, ChatStore);
 
 #[derive(Debug, Deserialize)]
 pub struct CreateDocumentRequest {
@@ -89,44 +89,36 @@ pub fn create_document_mutation_router() -> Router<AppState> {
 async fn list_documents(
     State((_, document_store, _)): State<AppState>, Query(p): Query<PaginationQuery>,
 ) -> Result<ResponseJson<DocumentListResponse>, StatusCode> {
-    match document_store {
-        Some(store) => {
-            let limit = p.limit.unwrap_or(20).clamp(1, 1000);
-            let offset = p.offset.unwrap_or(0);
-            match store.list_documents_paginated(limit, offset).await {
-                Ok((docs, total)) => {
-                    let documents = docs
-                        .into_iter()
-                        .map(|doc| {
-                            let mut preview: String = doc.content.chars().take(160).collect();
-                            if preview.len() < doc.content.len() {
-                                preview.push_str("...");
-                            }
-                            DocumentListItem {
-                                id: doc.id,
-                                filename: doc.source,
-                                preview,
-                                created_at: doc.created_at.to_rfc3339(),
-                                updated_at: doc.updated_at.to_rfc3339(),
-                            }
-                        })
-                        .collect();
-                    Ok(ResponseJson(DocumentListResponse {
-                        documents,
-                        total,
-                        limit,
-                        offset,
-                    }))
-                },
-                Err(e) => {
-                    error!("Failed to list documents: {}", e);
-                    Err(StatusCode::INTERNAL_SERVER_ERROR)
-                },
-            }
+    let limit = p.limit.unwrap_or(20).clamp(1, 1000);
+    let offset = p.offset.unwrap_or(0);
+    match document_store.list_documents_paginated(limit, offset).await {
+        Ok((docs, total)) => {
+            let documents = docs
+                .into_iter()
+                .map(|doc| {
+                    let mut preview: String = doc.content.chars().take(160).collect();
+                    if preview.len() < doc.content.len() {
+                        preview.push_str("...");
+                    }
+                    DocumentListItem {
+                        id: doc.id,
+                        filename: doc.source,
+                        preview,
+                        created_at: doc.created_at.to_rfc3339(),
+                        updated_at: doc.updated_at.to_rfc3339(),
+                    }
+                })
+                .collect();
+            Ok(ResponseJson(DocumentListResponse {
+                documents,
+                total,
+                limit,
+                offset,
+            }))
         },
-        None => {
-            error!("Document store not available");
-            Err(StatusCode::SERVICE_UNAVAILABLE)
+        Err(e) => {
+            error!("Failed to list documents: {}", e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
         },
     }
 }
@@ -134,18 +126,12 @@ async fn list_documents(
 async fn get_document(
     State((_, document_store, _)): State<AppState>, Path(id): Path<String>,
 ) -> Result<ResponseJson<DocumentResponse>, StatusCode> {
-    match document_store {
-        Some(store) => match store.get_document(&id).await {
-            Ok(Some(doc)) => Ok(ResponseJson(DocumentResponse::from(doc))),
-            Ok(None) => Err(StatusCode::NOT_FOUND),
-            Err(e) => {
-                error!("Failed to get document: {}", e);
-                Err(StatusCode::INTERNAL_SERVER_ERROR)
-            },
-        },
-        None => {
-            error!("Document store not available");
-            Err(StatusCode::SERVICE_UNAVAILABLE)
+    match document_store.get_document(&id).await {
+        Ok(Some(doc)) => Ok(ResponseJson(DocumentResponse::from(doc))),
+        Ok(None) => Err(StatusCode::NOT_FOUND),
+        Err(e) => {
+            error!("Failed to get document: {}", e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
         },
     }
 }
@@ -155,23 +141,16 @@ async fn create_document(
 ) -> Response {
     info!("Creating document");
 
-    match document_store {
-        Some(store) =>
-            process_and_save_document(agent, store, &req.filename, &req.content, "Created")
-                .await
-                .map_err(|(status, error)| (status, ResponseJson(ErrorResponse { error })))
-                .into_response(),
-        None => {
-            error!("Document store not available");
-            (
-                StatusCode::SERVICE_UNAVAILABLE,
-                ResponseJson(ErrorResponse {
-                    error: "文档存储服务不可用".to_string(),
-                }),
-            )
-                .into_response()
-        },
-    }
+    process_and_save_document(
+        agent,
+        document_store,
+        &req.filename,
+        &req.content,
+        "Created",
+    )
+    .await
+    .map_err(|(status, error)| (status, ResponseJson(ErrorResponse { error })))
+    .into_response()
 }
 
 async fn update_document(
@@ -179,68 +158,61 @@ async fn update_document(
     Json(req): Json<UpdateDocumentRequest>,
 ) -> Result<ResponseJson<DocumentResponse>, StatusCode> {
     info!("Updating document");
-    match document_store {
-        Some(store) => match store.get_document(&id).await {
-            Ok(Some(mut doc)) => {
-                doc.content = req.content.clone();
-                if let Some(filename) = req.filename.clone() {
-                    doc.source = filename;
-                }
-                doc.updated_at = chrono::Utc::now();
+    match document_store.get_document(&id).await {
+        Ok(Some(mut doc)) => {
+            doc.content = req.content.clone();
+            if let Some(filename) = req.filename.clone() {
+                doc.source = filename;
+            }
+            doc.updated_at = chrono::Utc::now();
 
-                // 删除旧文档并添加新文档
-                if let Err(e) = store.delete_document(&id).await {
-                    error!("Failed to delete old document: {}", e);
-                }
+            // 删除旧文档并添加新文档
+            if let Err(e) = document_store.delete_document(&id).await {
+                error!("Failed to delete old document: {}", e);
+            }
 
-                // 获取 embedding model 从 agent context
-                let embedding_model = {
-                    let context = agent.context.read().unwrap();
-                    context.embedding_model.clone()
-                };
+            // 获取 embedding model 从 agent context
+            let embedding_model = {
+                let context = agent.context.read();
+                context.embedding_model.clone()
+            };
 
-                match store
-                    .add_documents_with_embeddings(vec![doc.clone()], embedding_model)
-                    .await
-                {
-                    Ok(_) => {
-                        info!("Updated document: {}", doc.id);
+            match document_store
+                .add_documents_with_embeddings(vec![doc.clone()], embedding_model)
+                .await
+            {
+                Ok(_) => {
+                    info!("Updated document: {}", doc.id);
 
-                        // 保存文件备份
-                        if let Some(backup) = crate::utils::get_file_backup() {
-                            match backup.save_backup(&doc.id, &doc.source, &doc.content).await {
-                                Ok(path) => {
-                                    info!("💾 Updated backup to: {:?}", path);
-                                },
-                                Err(e) => {
-                                    warn!("⚠️ Failed to save updated backup: {}", e);
-                                },
-                            }
+                    // 保存文件备份
+                    if let Some(backup) = crate::utils::get_file_backup() {
+                        match backup.save_backup(&doc.id, &doc.source, &doc.content).await {
+                            Ok(path) => {
+                                info!("💾 Updated backup to: {:?}", path);
+                            },
+                            Err(e) => {
+                                warn!("⚠️ Failed to save updated backup: {}", e);
+                            },
                         }
+                    }
 
-                        // 标记agent需要重建以使用更新的文档
-                        if let Ok(mut context) = agent.context.write() {
-                            context.needs_rebuild = true;
-                            info!("Marked agent for rebuild due to updated document");
-                        }
+                    // 标记agent需要重建以使用更新的文档
+                    let mut context = agent.context.write();
+                    context.needs_rebuild = true;
+                    info!("Marked agent for rebuild due to updated document");
 
-                        Ok(ResponseJson(DocumentResponse::from(doc)))
-                    },
-                    Err(e) => {
-                        error!("Failed to update document: {}", e);
-                        Err(StatusCode::INTERNAL_SERVER_ERROR)
-                    },
-                }
-            },
-            Ok(None) => Err(StatusCode::NOT_FOUND),
-            Err(e) => {
-                error!("Failed to get document: {}", e);
-                Err(StatusCode::INTERNAL_SERVER_ERROR)
-            },
+                    Ok(ResponseJson(DocumentResponse::from(doc)))
+                },
+                Err(e) => {
+                    error!("Failed to update document: {}", e);
+                    Err(StatusCode::INTERNAL_SERVER_ERROR)
+                },
+            }
         },
-        None => {
-            error!("Document store not available");
-            Err(StatusCode::SERVICE_UNAVAILABLE)
+        Ok(None) => Err(StatusCode::NOT_FOUND),
+        Err(e) => {
+            error!("Failed to get document: {}", e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
         },
     }
 }
@@ -249,74 +221,59 @@ async fn delete_document(
     State((agent, document_store, _)): State<AppState>, Path(id): Path<String>,
 ) -> Result<StatusCode, StatusCode> {
     info!("Deleting document: {}", id);
-    match document_store {
-        Some(store) => {
-            // 首先检查这个文档是否存在，以及是否是分块文档
-            match store.get_document(&id).await {
-                Ok(Some(doc)) => {
-                    // 检查是否是分块文档（通过source字段判断）
-                    let is_chunked = doc.source.contains(" (Part ");
+    // 首先检查这个文档是否存在，以及是否是分块文档
+    match document_store.get_document(&id).await {
+        Ok(Some(doc)) => {
+            // 检查是否是分块文档（通过source字段判断）
+            let is_chunked = doc.source.contains(" (Part ");
 
-                    let (delete_id, backup_id) = if is_chunked {
-                        // 分块文档：提取base_id，删除所有分块
-                        let parts: Vec<&str> = id.split('-').collect();
-                        let base_id = parts[..parts.len() - 1].join("-");
-                        (format!("{}_CHUNKED", base_id), base_id)
-                    } else {
-                        // 单文档：直接使用原ID（现在单文档不再有-0后缀）
-                        (id.clone(), id.clone())
-                    };
+            let (delete_id, backup_id) = if is_chunked {
+                // 分块文档：提取base_id，删除所有分块
+                let parts: Vec<&str> = id.split('-').collect();
+                let base_id = parts[..parts.len() - 1].join("-");
+                (format!("{}_CHUNKED", base_id), base_id)
+            } else {
+                // 单文档：直接使用原ID（现在单文档不再有-0后缀）
+                (id.clone(), id.clone())
+            };
 
-                    // 删除文档
-                    match store.delete_document(&delete_id).await {
-                        Ok(_) => {
-                            info!("Deleted document(s) with base ID: {}", backup_id);
+            // 删除文档
+            match document_store.delete_document(&delete_id).await {
+                Ok(_) => {
+                    info!("Deleted document(s) with base ID: {}", backup_id);
 
-                            // 删除文件备份
-                            if let Some(backup) = crate::utils::get_file_backup() {
-                                match backup.delete_backup(&backup_id).await {
-                                    Ok(count) => {
-                                        info!(
-                                            "🗑️  Deleted {} backup file(s) for ID: {}",
-                                            count, backup_id
-                                        );
-                                    },
-                                    Err(e) => {
-                                        warn!(
-                                            "⚠️ Failed to delete backup for ID {}: {}",
-                                            backup_id, e
-                                        );
-                                    },
-                                }
-                            }
-
-                            // 🔧 标记agent需要重建以排除已删除的文档
-                            if let Ok(mut context) = agent.context.write() {
-                                context.needs_rebuild = true;
-                                info!("Marked agent for rebuild due to document deletion");
-                            }
-
-                            Ok(StatusCode::NO_CONTENT)
-                        },
-                        Err(e) => {
-                            error!("Failed to delete document: {}", e);
-                            Err(StatusCode::INTERNAL_SERVER_ERROR)
-                        },
+                    // 删除文件备份
+                    if let Some(backup) = crate::utils::get_file_backup() {
+                        match backup.delete_backup(&backup_id).await {
+                            Ok(count) => {
+                                info!("🗑️  Deleted {} backup file(s) for ID: {}", count, backup_id);
+                            },
+                            Err(e) => {
+                                warn!("⚠️ Failed to delete backup for ID {}: {}", backup_id, e);
+                            },
+                        }
                     }
-                },
-                Ok(None) => {
-                    error!("Document not found: {}", id);
-                    Err(StatusCode::NOT_FOUND)
+
+                    // 🔧 标记agent需要重建以排除已删除的文档
+                    let mut context = agent.context.write();
+                    context.needs_rebuild = true;
+                    info!("Marked agent for rebuild due to document deletion");
+
+                    Ok(StatusCode::NO_CONTENT)
                 },
                 Err(e) => {
-                    error!("Failed to get document: {}", e);
+                    error!("Failed to delete document: {}", e);
                     Err(StatusCode::INTERNAL_SERVER_ERROR)
                 },
             }
         },
-        None => {
-            error!("Document store not available");
-            Err(StatusCode::SERVICE_UNAVAILABLE)
+        Ok(None) => {
+            error!("Document not found: {}", id);
+            Err(StatusCode::NOT_FOUND)
+        },
+        Err(e) => {
+            error!("Failed to get document: {}", e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
         },
     }
 }
@@ -325,129 +282,115 @@ async fn upload_document(
     State((agent, document_store, _)): State<AppState>, mut multipart: Multipart,
 ) -> Response {
     info!("Uploading document");
-    match document_store {
-        Some(store) => {
-            let mut filename = String::new();
-            let mut file_data = None;
+    let mut filename = String::new();
+    let mut file_data = None;
 
-            // 读取multipart字段
-            loop {
-                match multipart.next_field().await {
-                    Ok(Some(field)) => {
-                        let name = field.name().unwrap_or_default().to_string();
-                        let data = match field.bytes().await {
-                            Ok(d) => d,
+    // 读取multipart字段
+    loop {
+        match multipart.next_field().await {
+            Ok(Some(field)) => {
+                let name = field.name().unwrap_or_default().to_string();
+                let data = match field.bytes().await {
+                    Ok(d) => d,
+                    Err(e) => {
+                        error!("Failed to read field data: {}", e);
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            ResponseJson(ErrorResponse {
+                                error: "读取文件数据失败".to_string(),
+                            }),
+                        )
+                            .into_response();
+                    },
+                };
+
+                match name.as_str() {
+                    "filename" => {
+                        filename = match String::from_utf8(data.to_vec()) {
+                            Ok(s) => s,
                             Err(e) => {
-                                error!("Failed to read field data: {}", e);
+                                error!("Invalid filename encoding: {}", e);
                                 return (
                                     StatusCode::BAD_REQUEST,
                                     ResponseJson(ErrorResponse {
-                                        error: "读取文件数据失败".to_string(),
+                                        error: "文件名编码无效".to_string(),
                                     }),
                                 )
                                     .into_response();
                             },
                         };
-
-                        match name.as_str() {
-                            "filename" => {
-                                filename = match String::from_utf8(data.to_vec()) {
-                                    Ok(s) => s,
-                                    Err(e) => {
-                                        error!("Invalid filename encoding: {}", e);
-                                        return (
-                                            StatusCode::BAD_REQUEST,
-                                            ResponseJson(ErrorResponse {
-                                                error: "文件名编码无效".to_string(),
-                                            }),
-                                        )
-                                            .into_response();
-                                    },
-                                };
-                            },
-                            "file" => {
-                                file_data = Some(data);
-                            },
-                            _ => {},
-                        }
                     },
-                    Ok(None) => break,
-                    Err(e) => {
-                        error!("Failed to read multipart field: {}", e);
-                        return (
-                            StatusCode::BAD_REQUEST,
-                            ResponseJson(ErrorResponse {
-                                error: "无效的上传请求".to_string(),
-                            }),
-                        )
-                            .into_response();
+                    "file" => {
+                        file_data = Some(data);
                     },
+                    _ => {},
                 }
-            }
-
-            if filename.is_empty() || file_data.is_none() {
+            },
+            Ok(None) => break,
+            Err(e) => {
+                error!("Failed to read multipart field: {}", e);
                 return (
                     StatusCode::BAD_REQUEST,
                     ResponseJson(ErrorResponse {
-                        error: "缺少文件名或文件内容".to_string(),
+                        error: "无效的上传请求".to_string(),
+                    }),
+                )
+                    .into_response();
+            },
+        }
+    }
+
+    if filename.is_empty() || file_data.is_none() {
+        return (
+            StatusCode::BAD_REQUEST,
+            ResponseJson(ErrorResponse {
+                error: "缺少文件名或文件内容".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    let file_data = file_data.unwrap();
+
+    // 解析文档内容
+    let content = match DocumentParser::parse(&filename, file_data).await {
+        Ok(text) => text,
+        Err(e) => {
+            error!("Failed to parse document {}: {}", filename, e);
+
+            if e.to_string().contains("Unsupported file type") {
+                let supported = DocumentParser::supported_extensions().join(", ");
+                return (
+                    StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                    ResponseJson(ErrorResponse {
+                        error: format!("不支持的文件类型。支持的格式：{}", supported),
                     }),
                 )
                     .into_response();
             }
 
-            let file_data = file_data.unwrap();
-
-            // 解析文档内容
-            let content = match DocumentParser::parse(&filename, file_data).await {
-                Ok(text) => text,
-                Err(e) => {
-                    error!("Failed to parse document {}: {}", filename, e);
-
-                    if e.to_string().contains("Unsupported file type") {
-                        let supported = DocumentParser::supported_extensions().join(", ");
-                        return (
-                            StatusCode::UNSUPPORTED_MEDIA_TYPE,
-                            ResponseJson(ErrorResponse {
-                                error: format!("不支持的文件类型。支持的格式：{}", supported),
-                            }),
-                        )
-                            .into_response();
-                    }
-
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        ResponseJson(ErrorResponse {
-                            error: format!("文档解析失败: {}", e),
-                        }),
-                    )
-                        .into_response();
-                },
-            };
-
-            info!(
-                "Parsed document '{}', extracted {} chars",
-                filename,
-                content.len()
-            );
-
-            // 处理文档
-            match process_and_save_document(agent, store, &filename, &content, "Uploaded").await {
-                Ok(response) => response.into_response(),
-                Err(status) => {
-                    error!("Failed to upload document: {}", status.1);
-                    (status.0, ResponseJson(ErrorResponse { error: status.1 })).into_response()
-                },
-            }
-        },
-        None => {
-            error!("Document store not available");
-            (
-                StatusCode::SERVICE_UNAVAILABLE,
+            return (
+                StatusCode::BAD_REQUEST,
                 ResponseJson(ErrorResponse {
-                    error: "文档存储服务不可用".to_string(),
+                    error: format!("文档解析失败: {}", e),
                 }),
             )
-                .into_response()
+                .into_response();
+        },
+    };
+
+    info!(
+        "Parsed document '{}', extracted {} chars",
+        filename,
+        content.len()
+    );
+
+    // 处理文档
+    match process_and_save_document(agent, document_store, &filename, &content, "Uploaded").await {
+        Ok(response) => response.into_response(),
+        Err(status) => {
+            error!("Failed to upload document: {}", status.1);
+            (status.0, ResponseJson(ErrorResponse { error: status.1 })).into_response()
         },
     }
 }
@@ -457,27 +400,20 @@ async fn reset_documents(
     State((agent, document_store, _)): State<AppState>,
 ) -> Result<StatusCode, StatusCode> {
     info!("Resetting document store");
-    match document_store {
-        Some(store) => match store.reset_table().await {
-            Ok(_) => {
-                info!("Successfully reset document store");
+    match document_store.reset_table().await {
+        Ok(_) => {
+            info!("Successfully reset document store");
 
-                // 标记agent需要重建
-                if let Ok(mut context) = agent.context.write() {
-                    context.needs_rebuild = true;
-                    info!("Marked agent for rebuild due to document store reset");
-                }
+            // 标记agent需要重建
+            let mut context = agent.context.write();
+            context.needs_rebuild = true;
+            info!("Marked agent for rebuild due to document store reset");
 
-                Ok(StatusCode::OK)
-            },
-            Err(e) => {
-                error!("Failed to reset document store: {}", e);
-                Err(StatusCode::INTERNAL_SERVER_ERROR)
-            },
+            Ok(StatusCode::OK)
         },
-        None => {
-            error!("Document store not available");
-            Err(StatusCode::SERVICE_UNAVAILABLE)
+        Err(e) => {
+            error!("Failed to reset document store: {}", e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
         },
     }
 }
@@ -541,7 +477,7 @@ async fn process_and_save_document(
 
     // 获取 embedding model 从 agent context
     let embedding_model = {
-        let context = agent.context.read().unwrap();
+        let context = agent.context.read();
         context.embedding_model.clone()
     };
 
@@ -571,13 +507,12 @@ async fn process_and_save_document(
             }
 
             // 标记agent需要重建以使用新文档
-            if let Ok(mut context) = agent.context.write() {
-                context.needs_rebuild = true;
-                info!(
-                    "Marked agent for rebuild due to {} document",
-                    action.to_lowercase()
-                );
-            }
+            let mut context = agent.context.write();
+            context.needs_rebuild = true;
+            info!(
+                "Marked agent for rebuild due to {} document",
+                action.to_lowercase()
+            );
 
             Ok(ResponseJson(DocumentResponse::from(documents[0].clone())))
         },

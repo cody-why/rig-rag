@@ -7,7 +7,7 @@ use tower_http::cors::CorsLayer;
 use crate::{agent::RigAgent, db::{ConversationStore, DocumentStore, UserStore}, web::*};
 
 pub async fn create_router(
-    agent: Arc<RigAgent>, document_store: Option<Arc<DocumentStore>>, user_store: Arc<UserStore>,
+    agent: Arc<RigAgent>, document_store: Arc<DocumentStore>, user_store: Arc<UserStore>,
 ) -> Router {
     // 初始化对话存储
     let conversation_db_path = std::env::var("CONVERSATION_DB_PATH")

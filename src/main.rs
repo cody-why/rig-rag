@@ -1,6 +1,6 @@
 use std::{net::SocketAddr, sync::Arc};
 
-use rig_rag::{agent::RigAgent, db::UserStore, web};
+use rig_rag::{agent::RigAgent, config::AppConfig, db::{DocumentStore, UserStore}, web};
 use tracing::info;
 use tracing_subscriber::fmt::time::OffsetTime;
 
@@ -37,10 +37,13 @@ async fn main() {
             .expect("Failed to initialize user store"),
     );
 
-    let agent_builder = RigAgent::from_env();
-    let agent = agent_builder.build().await.unwrap();
+    // 加载应用配置
+    let config = AppConfig::from_env();
 
-    let document_store = agent.document_store.clone();
+    let agent = RigAgent::new_from_config(&config).await.unwrap();
+
+    // 为路由查询初始化 DocumentStore（供管理/查询接口使用）
+    let document_store = Arc::new(DocumentStore::with_config(&config.lancedb));
 
     let agent = Arc::new(agent);
 

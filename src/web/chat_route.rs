@@ -14,7 +14,7 @@ pub type ChatHistory = Vec<Message>;
 pub type ChatStore = Arc<RwLock<Cache<UserId, ChatHistory>>>;
 pub type ChatAppState = (
     Arc<RigAgent>,
-    Option<Arc<DocumentStore>>,
+    Arc<DocumentStore>,
     ChatStore,
     Arc<ConversationStore>,
 );

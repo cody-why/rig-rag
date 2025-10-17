@@ -11,8 +11,9 @@ use rig::embeddings::Embedding;
 use rig::{Embed, OneOrMany, embeddings::{EmbeddingModel, EmbeddingsBuilder}, vector_store::VectorStoreIndex, vector_store::request::VectorSearchRequest};
 use rig_lancedb::{LanceDbVectorIndex, SearchParams};
 use serde::{Deserialize, Deserializer, Serialize};
-use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
+
+use crate::config::LanceDbConfig;
 
 /// 文档结构
 #[derive(Debug, Clone, Serialize, Embed, PartialEq)]
@@ -84,9 +85,9 @@ impl<'de> Deserialize<'de> for Document {
 /// LanceDB 向量存储
 /// 建议使用 Arc<DocumentStore<M>> 来共享实例
 pub struct DocumentStore<M: EmbeddingModel> {
-    vector_index: RwLock<Option<LanceDbVectorIndex<M>>>,
     db_path: String,
     table_name: String,
+    _phantom: std::marker::PhantomData<M>,
 }
 
 impl<M: EmbeddingModel> DocumentStore<M> {
@@ -94,53 +95,17 @@ impl<M: EmbeddingModel> DocumentStore<M> {
         Self {
             db_path: db_path.to_string(),
             table_name: table_name.to_string(),
-            vector_index: RwLock::new(None),
+            _phantom: std::marker::PhantomData,
         }
     }
 
-    /// 检查向量索引是否已加载
-    pub async fn is_index_loaded(&self) -> bool {
-        self.vector_index.read().await.is_some()
-    }
-
-    /// 加载已存在的向量索引
-    pub async fn load_existing_index(&self, embedding_model: M) -> Result<bool>
-    where
-        M: Clone + Send + Sync + 'static,
-    {
-        let db = lancedb::connect(&self.db_path)
-            .execute()
-            .await
-            .context("Failed to connect to LanceDB")?;
-
-        let table_exists = db
-            .table_names()
-            .execute()
-            .await
-            .context("Failed to list table names")?
-            .contains(&self.table_name);
-
-        if !table_exists {
-            info!(
-                "📋 Table '{}' does not exist, will create new one when documents are added",
-                self.table_name
-            );
-            return Ok(false);
+    /// 使用 LanceDbConfig 创建 DocumentStore
+    pub fn with_config(config: &LanceDbConfig) -> Self {
+        Self {
+            db_path: config.path.clone(),
+            table_name: config.table_name.clone(),
+            _phantom: std::marker::PhantomData,
         }
-
-        let table = db
-            .open_table(&self.table_name)
-            .execute()
-            .await
-            .context("Failed to open table")?;
-
-        let search_params = SearchParams::default().column("embedding");
-        let vector_index = LanceDbVectorIndex::new(table, embedding_model, "id", search_params)
-            .await
-            .context("Failed to create vector index")?;
-
-        *self.vector_index.write().await = Some(vector_index);
-        Ok(true)
     }
 
     /// 从 RecordBatch 解析 Document
@@ -202,48 +167,76 @@ impl<M: EmbeddingModel> DocumentStore<M> {
         })
     }
 
+    /// 创建向量索引
+    pub async fn create_vector_index(&self, embedding_model: M) -> Result<LanceDbVectorIndex<M>>
+    where
+        M: Clone + Send + Sync + 'static,
+    {
+        let db = lancedb::connect(&self.db_path)
+            .execute()
+            .await
+            .context("Failed to connect to LanceDB")?;
+
+        let table_exists = db
+            .table_names()
+            .execute()
+            .await
+            .context("Failed to list table names")?
+            .contains(&self.table_name);
+
+        if !table_exists {
+            anyhow::bail!("Table '{}' does not exist", self.table_name);
+        }
+
+        let table = db
+            .open_table(&self.table_name)
+            .execute()
+            .await
+            .context("Failed to open table")?;
+
+        let search_params = SearchParams::default().column("embedding");
+        LanceDbVectorIndex::new(table, embedding_model, "id", search_params)
+            .await
+            .context("Failed to create vector index")
+    }
+
     /// 向量搜索
-    pub async fn search(&self, query: &str, limit: usize) -> Result<Vec<(f64, Document)>> {
+    pub async fn search(
+        &self, vector_index: &LanceDbVectorIndex<M>, query: &str, limit: usize,
+    ) -> Result<Vec<(f64, Document)>> {
         let req = VectorSearchRequest::builder()
             .query(query)
             .samples(limit as u64)
             .build()
             .context("Failed to build vector search request")?;
 
-        // 获取向量索引的读锁
-        let vector_index_opt = self.vector_index.read().await;
-        if let Some(vector_index) = vector_index_opt.as_ref() {
-            debug!(
-                "Performing vector search with query: '{}', limit: {}",
-                query, limit
-            );
+        debug!(
+            "Performing vector search with query: '{}', limit: {}",
+            query, limit
+        );
 
-            // 直接使用向量索引的top_n方法，避免二次查询
-            let results: Vec<(f64, String, serde_json::Value)> =
-                VectorStoreIndex::top_n(vector_index, req)
-                    .await
-                    .context("Vector search failed")?;
+        // 使用传入的向量索引进行搜索
+        let results: Vec<(f64, String, serde_json::Value)> =
+            VectorStoreIndex::top_n(vector_index, req)
+                .await
+                .context("Vector search failed")?;
 
-            // 将Value转换为Document
-            let documents: Vec<(f64, Document)> = results
-                .into_iter()
-                .filter_map(|(score, _, value)| {
-                    serde_json::from_value::<Document>(value)
-                        .map_err(|e| {
-                            warn!("Failed to deserialize document: {}", e);
-                            e
-                        })
-                        .ok()
-                        .map(|doc| (score, doc))
-                })
-                .collect();
+        // 将Value转换为Document
+        let documents: Vec<(f64, Document)> = results
+            .into_iter()
+            .filter_map(|(score, _, value)| {
+                serde_json::from_value::<Document>(value)
+                    .map_err(|e| {
+                        warn!("Failed to deserialize document: {}", e);
+                        e
+                    })
+                    .ok()
+                    .map(|doc| (score, doc))
+            })
+            .collect();
 
-            debug!("Vector search returned {} documents", documents.len());
-            Ok(documents)
-        } else {
-            debug!("Vector index not initialized, returning empty results");
-            Ok(Vec::new())
-        }
+        debug!("Vector search returned {} documents", documents.len());
+        Ok(documents)
     }
 
     /// 返回自身用于 RAG 动态上下文
@@ -315,16 +308,12 @@ impl<M: EmbeddingModel> DocumentStore<M> {
             debug!("No documents to add, skipping");
             return Ok(());
         }
-
-        info!(
-            "Adding {} documents to table '{}'",
-            documents.len(),
-            self.table_name
-        );
+        let len = documents.len();
+        info!("Adding {} documents to table '{}'", len, self.table_name);
 
         // 构建 embeddings
         let embeddings = EmbeddingsBuilder::new(embedding_model.clone())
-            .documents(documents.clone())
+            .documents(documents)
             .context("Failed to create embeddings builder")?
             .build()
             .await
@@ -357,7 +346,7 @@ impl<M: EmbeddingModel> DocumentStore<M> {
             .context("Failed to list table names")?
             .contains(&self.table_name);
 
-        let table = if table_exists {
+        if table_exists {
             let table = db
                 .open_table(&self.table_name)
                 .execute()
@@ -369,7 +358,6 @@ impl<M: EmbeddingModel> DocumentStore<M> {
                 .execute()
                 .await
                 .context("Failed to add documents to existing table")?;
-            table
         } else {
             info!("Creating new table '{}'", self.table_name);
             db.create_table(
@@ -378,19 +366,12 @@ impl<M: EmbeddingModel> DocumentStore<M> {
             )
             .execute()
             .await
-            .context("Failed to create new table")?
-        };
+            .context("Failed to create new table")?;
+        }
 
-        // 重建向量索引
-        let search_params = SearchParams::default().column("embedding");
-        let new_index = LanceDbVectorIndex::new(table, embedding_model, "id", search_params)
-            .await
-            .context("Failed to create new vector index")?;
-
-        *self.vector_index.write().await = Some(new_index);
         info!(
-            "Successfully added {} documents and rebuilt vector index",
-            documents.len()
+            "Successfully added {} documents to table '{}'",
+            len, self.table_name
         );
         Ok(())
     }
@@ -571,9 +552,7 @@ impl<M: EmbeddingModel> DocumentStore<M> {
             .context("Failed to optimize table after deletion")?;
         info!("✅ Table optimized, deleted documents physically removed");
 
-        // 🔧 清空向量索引，强制下次使用时重新加载
-        *self.vector_index.write().await = None;
-        info!("🔄 Cleared vector index, will rebuild on next search or agent rebuild");
+        info!("🔄 Document deleted, vector index will be rebuilt by RigAgent when needed");
 
         Ok(())
     }
@@ -604,8 +583,7 @@ impl<M: EmbeddingModel> DocumentStore<M> {
             );
         }
 
-        // 清空向量索引
-        *self.vector_index.write().await = None;
+        info!("🔄 Table reset, vector index will be rebuilt by RigAgent when needed");
         Ok(())
     }
 
@@ -703,67 +681,5 @@ impl<M: EmbeddingModel> DocumentStore<M> {
             ("embedding", Arc::new(embeddings) as ArrayRef),
         ])
         .map_err(|e| anyhow::anyhow!("Failed to create RecordBatch: {}", e))
-    }
-}
-
-/// 实现 VectorStoreIndex trait 以兼容现有代码
-impl<M: EmbeddingModel> VectorStoreIndex for DocumentStore<M> {
-    async fn top_n_ids(
-        &self, req: VectorSearchRequest,
-    ) -> Result<Vec<(f64, String)>, rig::vector_store::VectorStoreError> {
-        let vector_index_opt = self.vector_index.read().await;
-        if let Some(vector_index) = vector_index_opt.as_ref() {
-            vector_index
-                .top_n_ids(req)
-                .await
-                .map_err(|e| rig::vector_store::VectorStoreError::DatastoreError(Box::new(e)))
-        } else {
-            Ok(Vec::new())
-        }
-    }
-
-    async fn top_n<T: for<'a> serde::Deserialize<'a> + Send>(
-        &self, req: VectorSearchRequest,
-    ) -> Result<Vec<(f64, String, T)>, rig::vector_store::VectorStoreError> {
-        let vector_index_opt = self.vector_index.read().await;
-        if let Some(vector_index) = vector_index_opt.as_ref() {
-            vector_index
-                .top_n(req)
-                .await
-                .map_err(|e| rig::vector_store::VectorStoreError::DatastoreError(Box::new(e)))
-        } else {
-            Ok(Vec::new())
-        }
-    }
-}
-
-/// Newtype wrapper 用于在 RAG dynamic_context 中使用 Arc<DocumentStore>
-/// 这个包装器实现了 VectorStoreIndex，可以直接传递给 dynamic_context
-#[derive(Clone)]
-pub struct DocumentStoreRef<M: EmbeddingModel>(pub Arc<DocumentStore<M>>);
-
-impl<M: EmbeddingModel> DocumentStoreRef<M> {
-    pub fn new(store: Arc<DocumentStore<M>>) -> Self {
-        Self(store)
-    }
-}
-
-impl<M: EmbeddingModel> From<Arc<DocumentStore<M>>> for DocumentStoreRef<M> {
-    fn from(store: Arc<DocumentStore<M>>) -> Self {
-        Self(store)
-    }
-}
-
-impl<M: EmbeddingModel> VectorStoreIndex for DocumentStoreRef<M> {
-    async fn top_n_ids(
-        &self, req: VectorSearchRequest,
-    ) -> Result<Vec<(f64, String)>, rig::vector_store::VectorStoreError> {
-        self.0.top_n_ids(req).await
-    }
-
-    async fn top_n<T: for<'a> serde::Deserialize<'a> + Send>(
-        &self, req: VectorSearchRequest,
-    ) -> Result<Vec<(f64, String, T)>, rig::vector_store::VectorStoreError> {
-        self.0.top_n(req).await
     }
 }

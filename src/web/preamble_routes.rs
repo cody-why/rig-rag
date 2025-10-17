@@ -8,7 +8,7 @@ use tracing::{error, info};
 use crate::{agent::RigAgent, db::DocumentStore, web::ChatStore};
 
 // State 类型别名
-type AppState = (Arc<RigAgent>, Option<Arc<DocumentStore>>, ChatStore);
+type AppState = (Arc<RigAgent>, Arc<DocumentStore>, ChatStore);
 
 #[derive(Debug, Deserialize)]
 pub struct UpdatePreambleRequest {
@@ -36,15 +36,11 @@ async fn get_preamble(
     State((agent, _, _)): State<AppState>,
 ) -> Result<ResponseJson<PreambleResponse>, StatusCode> {
     // 从 agent context 获取 preamble，因为 LanceDB 主要用于向量存储
-    if let Ok(context) = agent.context.read() {
-        Ok(ResponseJson(PreambleResponse {
-            content: context.preamble.clone(),
-            updated_at: chrono::Utc::now().to_rfc3339(),
-        }))
-    } else {
-        error!("Failed to read agent context");
-        Err(StatusCode::INTERNAL_SERVER_ERROR)
-    }
+    let context = agent.context.read();
+    Ok(ResponseJson(PreambleResponse {
+        content: context.preamble.clone(),
+        updated_at: chrono::Utc::now().to_rfc3339(),
+    }))
 }
 
 async fn update_preamble(
@@ -65,10 +61,7 @@ async fn update_preamble(
 
     // 更新 agent context 中的 preamble 并持久化到文件
     {
-        let mut context = agent.context.write().map_err(|_| {
-            error!("Failed to write to agent context");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+        let mut context = agent.context.write();
 
         context.preamble = req.content.clone();
         context.needs_rebuild = true; // 标记需要重建agent
