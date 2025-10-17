@@ -27,9 +27,6 @@ pub async fn create_router(
             axum::http::header::AUTHORIZATION,
         ]);
 
-    // 创建聊天历史存储
-    let chat_store = create_chat_store();
-
     // 配置频率限制
     let chat_governor_conf = Arc::new(
         GovernorConfigBuilder::default()
@@ -72,7 +69,6 @@ pub async fn create_router(
         .with_state((
             agent.clone(),
             document_store.clone(),
-            chat_store.clone(),
             conversation_store.clone(),
         ));
 
@@ -83,10 +79,10 @@ pub async fn create_router(
     ));
 
     let user_query_router_with_state =
-        user_query_router.with_state((agent.clone(), document_store.clone(), chat_store.clone()));
+        user_query_router.with_state((agent.clone(), document_store.clone()));
 
     let admin_mutation_router_with_state =
-        admin_mutation_router.with_state((agent, document_store, chat_store));
+        admin_mutation_router.with_state((agent, document_store));
 
     // 合并所有路由组
     public_router

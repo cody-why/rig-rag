@@ -5,10 +5,10 @@ use serde::{Deserialize, Serialize};
 use tokio::fs;
 use tracing::{error, info};
 
-use crate::{agent::RigAgent, db::DocumentStore, web::ChatStore};
+use crate::{agent::RigAgent, db::DocumentStore};
 
 // State 类型别名
-type AppState = (Arc<RigAgent>, Arc<DocumentStore>, ChatStore);
+type AppState = (Arc<RigAgent>, Arc<DocumentStore>);
 
 #[derive(Debug, Deserialize)]
 pub struct UpdatePreambleRequest {
@@ -33,7 +33,7 @@ pub fn create_preamble_mutation_router() -> Router<AppState> {
 }
 
 async fn get_preamble(
-    State((agent, _, _)): State<AppState>,
+    State((agent, _)): State<AppState>,
 ) -> Result<ResponseJson<PreambleResponse>, StatusCode> {
     // 从 agent context 获取 preamble，因为 LanceDB 主要用于向量存储
     let context = agent.context.read();
@@ -44,7 +44,7 @@ async fn get_preamble(
 }
 
 async fn update_preamble(
-    State((agent, _, _)): State<AppState>, Json(req): Json<UpdatePreambleRequest>,
+    State((agent, _)): State<AppState>, Json(req): Json<UpdatePreambleRequest>,
 ) -> Result<ResponseJson<PreambleResponse>, StatusCode> {
     // 验证秘密密钥
     let required_secret =

@@ -4,11 +4,11 @@ use axum::{Router, extract::{Json, Multipart, Path, Query, State}, http::StatusC
 use serde::{Deserialize, Serialize};
 use tracing::{error, info, warn};
 
+use crate::utils::DocumentParser;
 use crate::{agent::RigAgent, db::{Document, DocumentStore}};
-use crate::{utils::DocumentParser, web::ChatStore};
 
 // State 类型别名
-pub type AppState = (Arc<RigAgent>, Arc<DocumentStore>, ChatStore);
+pub type AppState = (Arc<RigAgent>, Arc<DocumentStore>);
 
 #[derive(Debug, Deserialize)]
 pub struct CreateDocumentRequest {
@@ -87,7 +87,7 @@ pub fn create_document_mutation_router() -> Router<AppState> {
 }
 
 async fn list_documents(
-    State((_, document_store, _)): State<AppState>, Query(p): Query<PaginationQuery>,
+    State((_, document_store)): State<AppState>, Query(p): Query<PaginationQuery>,
 ) -> Result<ResponseJson<DocumentListResponse>, StatusCode> {
     let limit = p.limit.unwrap_or(20).clamp(1, 1000);
     let offset = p.offset.unwrap_or(0);
@@ -124,7 +124,7 @@ async fn list_documents(
 }
 
 async fn get_document(
-    State((_, document_store, _)): State<AppState>, Path(id): Path<String>,
+    State((_, document_store)): State<AppState>, Path(id): Path<String>,
 ) -> Result<ResponseJson<DocumentResponse>, StatusCode> {
     match document_store.get_document(&id).await {
         Ok(Some(doc)) => Ok(ResponseJson(DocumentResponse::from(doc))),
@@ -137,7 +137,7 @@ async fn get_document(
 }
 
 async fn create_document(
-    State((agent, document_store, _)): State<AppState>, Json(req): Json<CreateDocumentRequest>,
+    State((agent, document_store)): State<AppState>, Json(req): Json<CreateDocumentRequest>,
 ) -> Response {
     info!("Creating document");
 
@@ -154,7 +154,7 @@ async fn create_document(
 }
 
 async fn update_document(
-    State((agent, document_store, _)): State<AppState>, Path(id): Path<String>,
+    State((agent, document_store)): State<AppState>, Path(id): Path<String>,
     Json(req): Json<UpdateDocumentRequest>,
 ) -> Result<ResponseJson<DocumentResponse>, StatusCode> {
     info!("Updating document");
@@ -197,8 +197,7 @@ async fn update_document(
                     }
 
                     // 标记agent需要重建以使用更新的文档
-                    let mut context = agent.context.write();
-                    context.needs_rebuild = true;
+                    agent.set_needs_rebuild(true).await;
                     info!("Marked agent for rebuild due to updated document");
 
                     Ok(ResponseJson(DocumentResponse::from(doc)))
@@ -218,7 +217,7 @@ async fn update_document(
 }
 
 async fn delete_document(
-    State((agent, document_store, _)): State<AppState>, Path(id): Path<String>,
+    State((agent, document_store)): State<AppState>, Path(id): Path<String>,
 ) -> Result<StatusCode, StatusCode> {
     info!("Deleting document: {}", id);
     // 首先检查这个文档是否存在，以及是否是分块文档
@@ -255,8 +254,7 @@ async fn delete_document(
                     }
 
                     // 🔧 标记agent需要重建以排除已删除的文档
-                    let mut context = agent.context.write();
-                    context.needs_rebuild = true;
+                    agent.set_needs_rebuild(true).await;
                     info!("Marked agent for rebuild due to document deletion");
 
                     Ok(StatusCode::NO_CONTENT)
@@ -279,7 +277,7 @@ async fn delete_document(
 }
 
 async fn upload_document(
-    State((agent, document_store, _)): State<AppState>, mut multipart: Multipart,
+    State((agent, document_store)): State<AppState>, mut multipart: Multipart,
 ) -> Response {
     info!("Uploading document");
     let mut filename = String::new();
@@ -397,7 +395,7 @@ async fn upload_document(
 
 #[allow(dead_code)]
 async fn reset_documents(
-    State((agent, document_store, _)): State<AppState>,
+    State((agent, document_store)): State<AppState>,
 ) -> Result<StatusCode, StatusCode> {
     info!("Resetting document store");
     match document_store.reset_table().await {
@@ -405,8 +403,7 @@ async fn reset_documents(
             info!("Successfully reset document store");
 
             // 标记agent需要重建
-            let mut context = agent.context.write();
-            context.needs_rebuild = true;
+            agent.set_needs_rebuild(true).await;
             info!("Marked agent for rebuild due to document store reset");
 
             Ok(StatusCode::OK)
@@ -507,8 +504,7 @@ async fn process_and_save_document(
             }
 
             // 标记agent需要重建以使用新文档
-            let mut context = agent.context.write();
-            context.needs_rebuild = true;
+            agent.set_needs_rebuild(true).await;
             info!(
                 "Marked agent for rebuild due to {} document",
                 action.to_lowercase()

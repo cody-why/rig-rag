@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
-use axum::{Router, extract::{Json, Path, Query, State}, response::Json as ResponseJson, routing::{delete, get, post, put}};
+use axum::{Router, extract::{Json, Path, Query, State}, response::Json as ResponseJson, routing::{get, post}};
 use serde::{Deserialize, Serialize};
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
-use crate::{agent::RigAgent, db::{Conversation, ConversationMessage, ConversationStats, ConversationStatus, ConversationStore, CreateMessageRequest, DocumentStore, MessageRole, UserInteractionStats}};
+use crate::{agent::RigAgent, db::{Conversation, ConversationMessage, ConversationStats, ConversationStatus, ConversationStore, CreateMessageRequest, DocumentStore, UserInteractionStats}};
 
 type AppState = (Arc<RigAgent>, Arc<DocumentStore>, Arc<ConversationStore>);
 
@@ -64,23 +64,15 @@ pub struct AdminPaginationQuery {
 
 pub fn create_conversation_router() -> Router<AppState> {
     Router::new()
-        .route("/api/conversation/chat", post(handle_conversation_chat))
-        .route("/api/conversation/{conversation_id}", get(get_conversation))
         .route(
             "/api/conversation/{conversation_id}",
-            put(update_conversation),
-        )
-        .route(
-            "/api/conversation/{conversation_id}",
-            delete(delete_conversation),
+            get(get_conversation)
+                .put(update_conversation)
+                .delete(delete_conversation),
         )
         .route(
             "/api/conversation/{conversation_id}/messages",
-            get(get_conversation_messages),
-        )
-        .route(
-            "/api/conversation/{conversation_id}/messages",
-            post(add_message_to_conversation),
+            get(get_conversation_messages).post(add_message_to_conversation),
         )
         .route(
             "/api/user/{user_id}/conversations",
@@ -96,132 +88,6 @@ pub fn create_conversation_router() -> Router<AppState> {
             "/api/admin/conversations/cleanup",
             post(cleanup_old_conversations),
         )
-}
-
-/// 处理对话聊天请求
-pub async fn handle_conversation_chat(
-    State((agent, _, conversation_store)): State<AppState>,
-    Json(payload): Json<ConversationChatRequest>,
-) -> ResponseJson<ConversationChatResponse> {
-    // 生成或使用提供的用户ID
-    let user_id = payload.user_id.unwrap_or_else(generate_user_id);
-
-    // 获取或创建活跃对话
-    let conversation = match conversation_store
-        .get_or_create_active_conversation(&user_id)
-        .await
-    {
-        Ok(conv) => conv,
-        Err(e) => {
-            error!("Failed to get or create conversation: {}", e);
-            return ResponseJson(ConversationChatResponse {
-                response: "Sorry, I encountered an error processing your request.".to_string(),
-                user_id: user_id.clone(),
-                conversation_id: "".to_string(),
-                message_id: "".to_string(),
-            });
-        },
-    };
-
-    // 如果提供了特定的对话ID，使用该对话
-    let conversation_id = payload.conversation_id.unwrap_or(conversation.id.clone());
-
-    // 获取对话历史消息
-    let conversation_messages = match conversation_store
-        .get_conversation_messages(&conversation_id, Some(20), None)
-        .await
-    {
-        Ok(messages) => messages,
-        Err(e) => {
-            warn!("Failed to get conversation messages: {}", e);
-            Vec::new()
-        },
-    };
-
-    // 转换为 rig 的 Message 格式
-    let chat_history = conversation_messages
-        .into_iter()
-        .map(|msg| match msg.role {
-            MessageRole::User => rig::completion::Message::user(&msg.content),
-            MessageRole::Assistant => rig::completion::Message::assistant(&msg.content),
-            MessageRole::System => {
-                // System 消息暂时跳过，rig 可能不支持
-                rig::completion::Message::assistant(&msg.content)
-            },
-        })
-        .collect();
-
-    info!(
-        "Processing chat request for conversation {}: {}",
-        conversation_id, payload.message
-    );
-
-    // 使用 RigAgent 处理聊天请求
-    let response = match agent.dynamic_chat(&payload.message, chat_history).await {
-        Ok(response) => {
-            // 保存用户消息
-            let user_message_req = CreateMessageRequest {
-                conversation_id: conversation_id.clone(),
-                role: MessageRole::User,
-                content: payload.message.clone(),
-                metadata: None,
-            };
-
-            if let Err(e) = conversation_store.add_message(user_message_req).await {
-                warn!("Failed to save user message: {}", e);
-            }
-
-            // 保存AI响应
-            let assistant_message_req = CreateMessageRequest {
-                conversation_id: conversation_id.clone(),
-                role: MessageRole::Assistant,
-                content: response.clone(),
-                metadata: None,
-            };
-
-            let message_result = conversation_store.add_message(assistant_message_req).await;
-            let message_id = match message_result {
-                Ok(msg) => msg.id,
-                Err(e) => {
-                    warn!("Failed to save assistant message: {}", e);
-                    nanoid::nanoid!()
-                },
-            };
-
-            info!(
-                "Chat response for conversation {}: {}",
-                conversation_id, response
-            );
-            (response, message_id)
-        },
-        Err(e) => {
-            error!("Error generating chat response: {}", e);
-            let error_response = format!("Sorry, I encountered an error: {}", e);
-
-            // 保存错误消息
-            let error_message_req = CreateMessageRequest {
-                conversation_id: conversation_id.clone(),
-                role: MessageRole::System,
-                content: format!("Error: {}", e),
-                metadata: Some(serde_json::json!({"error": true})),
-            };
-
-            let message_result = conversation_store.add_message(error_message_req).await;
-            let message_id = match message_result {
-                Ok(msg) => msg.id,
-                Err(_) => nanoid::nanoid!(),
-            };
-
-            (error_response, message_id)
-        },
-    };
-
-    ResponseJson(ConversationChatResponse {
-        response: response.0,
-        user_id,
-        conversation_id,
-        message_id: response.1,
-    })
 }
 
 /// 获取对话详情
@@ -362,11 +228,6 @@ pub async fn get_user_interaction_stats(
             ResponseJson(None)
         },
     }
-}
-
-/// 生成用户ID
-fn generate_user_id() -> String {
-    nanoid::nanoid!()
 }
 
 // ==================== 管理员API ====================

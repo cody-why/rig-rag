@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicPtr, Ordering};
+
 use parking_lot::RwLock;
 use rig::{agent::Agent, completion::Chat, prelude::CompletionClient, providers::openai::{self}};
 use rig_lancedb::{LanceDbVectorIndex, SearchParams};
@@ -6,7 +8,7 @@ use super::RigAgentBuilder;
 use crate::config::{AppConfig, LanceDbConfig};
 
 pub struct RigAgent {
-    pub agent: RwLock<Agent<openai::CompletionModel>>,
+    pub agent: AtomicPtr<Agent<openai::CompletionModel>>,
     pub context: RwLock<RigAgentContext>,
 }
 
@@ -46,8 +48,14 @@ impl RigAgent {
         }
 
         // 使用当前（可能已重建）的agent进行聊天
-        let agent_arc = self.agent.read().clone();
-        let response = agent_arc
+        let agent_ptr = self.agent.load(Ordering::Acquire);
+        if agent_ptr.is_null() {
+            return Err(anyhow::anyhow!("Agent not initialized"));
+        }
+
+        // 安全地解引用原子指针
+        let agent = unsafe { &*agent_ptr };
+        let response = agent
             .chat(message, history)
             .await
             .map_err(|e| anyhow::anyhow!("Chat error: {}", e))?;
@@ -62,12 +70,19 @@ impl RigAgent {
         }
         let new_agent = self.build_agent().await?;
 
-        // 替换 agent
-        {
-            *self.agent.write() = new_agent;
-            self.context.write().needs_rebuild = false;
+        // 替换 agent - 使用原子指针替换
+        let new_agent_box = Box::new(new_agent);
+        let new_agent_ptr = Box::into_raw(new_agent_box);
+
+        // 原子地替换指针
+        let old_agent_ptr = self.agent.swap(new_agent_ptr, Ordering::AcqRel);
+
+        // 清理旧的 agent（如果存在）
+        if !old_agent_ptr.is_null() {
+            let _ = unsafe { Box::from_raw(old_agent_ptr) };
         }
 
+        self.context.write().needs_rebuild = false;
         Ok(())
     }
 
@@ -83,10 +98,23 @@ impl RigAgent {
         };
 
         let index = create_vector_index(&lancedb_config, &embedding_model).await?;
-
         let context = self.context.read();
         let agent = context.build_with_vector_index(index);
         Ok(agent)
+    }
+
+    pub async fn set_needs_rebuild(&self, needs_rebuild: bool) {
+        self.context.write().needs_rebuild = needs_rebuild;
+    }
+}
+
+impl Drop for RigAgent {
+    fn drop(&mut self) {
+        // 清理原子指针中的 agent
+        let agent_ptr = self.agent.swap(std::ptr::null_mut(), Ordering::AcqRel);
+        if !agent_ptr.is_null() {
+            let _ = unsafe { Box::from_raw(agent_ptr) };
+        }
     }
 }
 

@@ -23,11 +23,11 @@ async fn main() -> Result<()> {
 
     let client = openai::Client::builder(&openai_api_key)
         .base_url("https://api.siliconflow.cn/v1")
-        .build();
+        .build()?;
 
     let embedding_client = openai::Client::builder(&embedding_api_key)
         .base_url("https://api.siliconflow.cn/v1")
-        .build();
+        .build()?;
 
     let embedding_model = embedding_client.embedding_model("BAAI/bge-m3");
 

@@ -1,23 +1,13 @@
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
 use axum::{Router, extract::{Json, Path, State}, routing::{get, post}};
-use mini_moka::sync::Cache;
 use rig::{completion::Message, message::{AssistantContent, UserContent}};
 use serde::{Deserialize, Serialize};
-use tokio::sync::RwLock;
 use tracing::{error, info};
 
-use crate::{agent::RigAgent, db::{ConversationStore, CreateMessageRequest, DocumentStore, MessageRole}};
+use crate::{agent::RigAgent, db::{ConversationStore, CreateMessageRequest, DocumentStore, MessageRole}, web::chat_store};
 
-pub type UserId = String;
-pub type ChatHistory = Vec<Message>;
-pub type ChatStore = Arc<RwLock<Cache<UserId, ChatHistory>>>;
-pub type ChatAppState = (
-    Arc<RigAgent>,
-    Arc<DocumentStore>,
-    ChatStore,
-    Arc<ConversationStore>,
-);
+pub type ChatAppState = (Arc<RigAgent>, Arc<DocumentStore>, Arc<ConversationStore>);
 
 #[derive(Debug, Deserialize)]
 pub struct ChatRequest {
@@ -43,15 +33,6 @@ pub fn create_chat_router() -> Router<ChatAppState> {
         .route("/api/history/{user_id}", get(get_chat_history))
 }
 
-pub fn create_chat_store() -> ChatStore {
-    let cache: Cache<UserId, ChatHistory> = Cache::builder()
-        .time_to_idle(Duration::from_secs(30 * 60))
-        // .time_to_live(Duration::from_secs(60 * 60))
-        .build();
-    // 创建聊天历史存储
-    Arc::new(RwLock::new(cache))
-}
-
 // 简单的语言检测逻辑
 #[allow(dead_code)]
 fn is_chinese(text: &str) -> bool {
@@ -71,9 +52,9 @@ fn is_chinese(text: &str) -> bool {
 // 检查是否为无意义短句
 fn is_meaningless_message(message: &str) -> bool {
     // 检查字符数
-    // if message.chars().count() < 2 {
-    //     return true;
-    // }
+    if message.chars().count() < 2 {
+        return true;
+    }
 
     // 检查是否全是标点符号
     if message.chars().all(|c| c.is_ascii_punctuation()) {
@@ -89,8 +70,7 @@ fn is_meaningless_message(message: &str) -> bool {
 }
 
 pub async fn handle_chat(
-    State((agent, _, chat_store, conversation_store)): State<ChatAppState>,
-    Json(payload): Json<ChatRequest>,
+    State((agent, _, conversation_store)): State<ChatAppState>, Json(payload): Json<ChatRequest>,
 ) -> Json<ChatResponse> {
     // 从请求中获取用户 ID 或生成一个新的
     let user_id = payload.user_id.unwrap_or_else(generate_user_id);
@@ -98,32 +78,36 @@ pub async fn handle_chat(
 
     info!("Received chat request from user {}: {}", user_id, message);
 
-    // 从内存缓存获取聊天历史
-    let chat_history = {
-        let chat_store = chat_store.read().await;
-        chat_store.get(&user_id).unwrap_or_default()
+    // 从内存缓存获取或初始化聊天历史（使用 RwLock 包装）
+    let chat_history = if let Some(h) = chat_store().get(&user_id) {
+        h
+    } else {
+        let h = Arc::new(parking_lot::RwLock::new(Vec::new()));
+        chat_store().insert(user_id.clone(), h.clone());
+        h
     };
 
     // 使用 RigAgent 处理聊天请求
-    let response = match agent.dynamic_chat(message, chat_history).await {
+    let history_snapshot = { chat_history.read().clone() };
+    let response = match agent.dynamic_chat(message, history_snapshot).await {
         Ok(response) => {
             if !is_meaningless_message(message) {
                 // 更新内存缓存
                 {
-                    let chat_store_write = chat_store.write().await;
-                    let mut history = chat_store_write.get(&user_id).unwrap_or_default();
-
-                    // 添加用户消息和 AI 响应到历史记录
+                    let history_arc = chat_history.clone();
+                    let mut history = history_arc.write();
                     history.push(Message::user(message));
                     history.push(Message::assistant(&response));
-
-                    // 保存历史记录条数上限
-                    if history.len() > 10 {
-                        history.remove(0);
-                        history.remove(0);
+                    // 保存历史记录条数上限（最多保留最近 10 条）
+                    let excess = history.len().saturating_sub(10);
+                    if excess > 0 {
+                        for _ in 0..excess {
+                            if history.is_empty() {
+                                break;
+                            }
+                            let _ = history.remove(0);
+                        }
                     }
-
-                    chat_store_write.insert(user_id.clone(), history);
                 }
 
                 // 获取或创建活跃对话用于数据库存储
@@ -176,14 +160,20 @@ pub async fn handle_chat(
 }
 
 pub async fn get_chat_history(
-    State((_, _, chat_store, _)): State<ChatAppState>, Path(user_id): Path<String>,
+    State((_, _, _)): State<ChatAppState>, Path(user_id): Path<String>,
 ) -> Json<Vec<ChatHistoryItem>> {
-    let chat_store = chat_store.read().await;
+    // 获取或初始化
+    let history_arc = if let Some(h) = chat_store().get(&user_id) {
+        h
+    } else {
+        let h = Arc::new(parking_lot::RwLock::new(Vec::new()));
+        chat_store().insert(user_id.clone(), h.clone());
+        h
+    };
 
-    let history = chat_store.get(&user_id).unwrap_or_default();
-
-    let history_items = history
-        .into_iter()
+    let history_items = history_arc
+        .read()
+        .iter()
         .filter_map(|msg| match msg {
             Message::User { content } => match content.first() {
                 UserContent::Text(text) => Some(ChatHistoryItem {

@@ -1,3 +1,5 @@
+use std::sync::atomic::AtomicPtr;
+
 use parking_lot::RwLock;
 use rig::prelude::EmbeddingsClient;
 use rig::providers::openai::Client;
@@ -64,8 +66,13 @@ impl RigAgentBuilder {
 
         info!("✅ RigAgent initialized successfully");
 
+        // 将 agent 包装在 Box 中并转换为原始指针
+        let agent_box = Box::new(rag_agent);
+        let agent_ptr = Box::into_raw(agent_box);
+        let agent_atomic = AtomicPtr::new(agent_ptr);
+
         Ok(RigAgent {
-            agent: RwLock::new(rag_agent),
+            agent: agent_atomic,
             context: RwLock::new(context),
         })
     }
@@ -77,13 +84,14 @@ impl RigAgentBuilder {
             .build();
 
         debug!("OpenAI client initialized successfully");
-        client
+        client.unwrap()
     }
 
     fn init_embedding_client(&self) -> rig::providers::openai::EmbeddingModel {
         let embedding_client = Client::builder(&self.config.embedding_api_key)
             .base_url(&self.config.embedding_url)
-            .build();
+            .build()
+            .unwrap();
 
         let model = embedding_client.embedding_model(&self.config.embedding_model);
 
