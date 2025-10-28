@@ -10,11 +10,8 @@ pub async fn create_router(
     agent: Arc<RigAgent>, document_store: Arc<DocumentStore>, user_store: Arc<UserStore>,
 ) -> Router {
     // 初始化对话存储
-    let conversation_db_path = std::env::var("CONVERSATION_DB_PATH")
-        .unwrap_or_else(|_| "sqlite:data/conversations.db?mode=rwc".to_string());
-
     let conversation_store = Arc::new(
-        ConversationStore::new(&conversation_db_path)
+        ConversationStore::from_env()
             .await
             .expect("Failed to initialize conversation store"),
     );

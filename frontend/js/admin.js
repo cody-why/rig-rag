@@ -1295,7 +1295,7 @@ function displayConversations(conversations) {
             <div class="document-meta">
                 <strong>用户ID:</strong> ${conv.user_id}<br>
                 <strong>创建时间:</strong> ${formatDateTime(conv.created_at)}<br>
-                <strong>最后消息:</strong> ${conv.last_message_at ? formatDateTime(conv.last_message_at) : '无'}<br>
+                <strong>最后消息:</strong> ${conv.updated_at ? formatDateTime(conv.updated_at) : '无'}<br>
                 ${conv.title ? `<strong>标题:</strong> ${conv.title}<br>` : ''}
             </div>
             
@@ -1382,7 +1382,6 @@ async function viewConversationDetails(conversationId) {
                     <strong>状态:</strong> ${getConversationStatusText(conversation.status)}<br>
                     <strong>创建时间:</strong> ${formatDateTime(conversation.created_at)}<br>
                     <strong>更新时间:</strong> ${formatDateTime(conversation.updated_at)}<br>
-                    <strong>最后消息:</strong> ${conversation.last_message_at ? formatDateTime(conversation.last_message_at) : '无'}<br>
                     ${conversation.title ? `<strong>标题:</strong> ${conversation.title}<br>` : ''}
                     ${conversation.metadata ? `<strong>元数据:</strong> <pre style="background: #f8f9fa; padding: 10px; border-radius: 5px; overflow-x: auto;">${JSON.stringify(conversation.metadata, null, 2)}</pre>` : ''}
                 </div>

@@ -54,7 +54,6 @@ pub struct Conversation {
     pub metadata: Option<serde_json::Value>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
-    pub last_message_at: Option<DateTime<Utc>>,
 }
 
 /// 对话消息模型
@@ -84,7 +83,6 @@ impl sqlx::FromRow<'_, SqliteRow> for Conversation {
     fn from_row(row: &SqliteRow) -> sqlx::Result<Self> {
         let created_at_ts: i64 = row.try_get("created_at")?;
         let updated_at_ts: i64 = row.try_get("updated_at")?;
-        let last_message_at_ts: Option<i64> = row.try_get("last_message_at")?;
 
         let created_at = DateTime::from_timestamp(created_at_ts, 0).ok_or_else(|| {
             sqlx::Error::Decode(Box::new(std::io::Error::new(
@@ -100,8 +98,6 @@ impl sqlx::FromRow<'_, SqliteRow> for Conversation {
             )))
         })?;
 
-        let last_message_at = last_message_at_ts.and_then(|ts| DateTime::from_timestamp(ts, 0));
-
         Ok(Conversation {
             id: row.try_get("id")?,
             user_id: row.try_get("user_id")?,
@@ -113,7 +109,6 @@ impl sqlx::FromRow<'_, SqliteRow> for Conversation {
                 .and_then(|s: String| serde_json::from_str(&s).ok()),
             created_at,
             updated_at,
-            last_message_at,
         })
     }
 }
@@ -174,6 +169,12 @@ pub struct ConversationStore {
 }
 
 impl ConversationStore {
+    pub async fn from_env() -> Result<Self> {
+        let conversation_db_path = std::env::var("CONVERSATION_DB_PATH")
+            .unwrap_or_else(|_| "sqlite:data/conversations.db?mode=rwc".to_string());
+        Self::new(&conversation_db_path).await
+    }
+
     /// 创建新的对话存储实例
     pub async fn new(database_url: &str) -> Result<Self> {
         let pool = SqlitePool::connect(database_url)
@@ -207,14 +208,12 @@ impl ConversationStore {
                     title TEXT,
                     metadata TEXT, -- JSON string
                     created_at INTEGER NOT NULL,
-                    updated_at INTEGER NOT NULL,
-                    last_message_at INTEGER
+                    updated_at INTEGER NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_conversations_user_id ON conversations(user_id);
                 CREATE INDEX IF NOT EXISTS idx_conversations_status ON conversations(status);
                 CREATE INDEX IF NOT EXISTS idx_conversations_created_at ON conversations(created_at);
-                CREATE INDEX IF NOT EXISTS idx_conversations_last_message_at ON conversations(last_message_at);
-                CREATE INDEX IF NOT EXISTS idx_conversations_status_last_message ON conversations(status, last_message_at);
+                CREATE INDEX IF NOT EXISTS idx_conversations_status_updated_at ON conversations(status, updated_at);
                 CREATE INDEX IF NOT EXISTS idx_conversations_status_created_at ON conversations(status, created_at);
                 "#,
             )
@@ -289,7 +288,6 @@ impl ConversationStore {
             metadata: req.metadata,
             created_at: now,
             updated_at: now,
-            last_message_at: None,
         })
     }
 
@@ -298,7 +296,7 @@ impl ConversationStore {
         // 首先查找活跃的对话
         let conversation = sqlx::query_as::<_, Conversation>(
             r#"
-            SELECT id, user_id, status, title, metadata, created_at, updated_at, last_message_at
+            SELECT id, user_id, status, title, metadata, created_at, updated_at
             FROM conversations
             WHERE user_id = ? AND status = 'active'
             ORDER BY created_at DESC
@@ -356,20 +354,19 @@ impl ConversationStore {
         .await
         .context("Failed to insert message")?;
 
-        // 更新对话的最后消息时间
+        // 更新对话的最后更新时间
         sqlx::query(
             r#"
             UPDATE conversations 
-            SET last_message_at = ?, updated_at = ?
+            SET updated_at = ?
             WHERE id = ?
             "#,
         )
         .bind(timestamp)
-        .bind(timestamp)
         .bind(&req.conversation_id)
         .execute(&mut *tx)
         .await
-        .context("Failed to update conversation last_message_at")?;
+        .context("Failed to update conversation")?;
 
         // 提交事务
         tx.commit().await.context("Failed to commit transaction")?;
@@ -424,10 +421,10 @@ impl ConversationStore {
 
         let conversations = sqlx::query_as::<_, Conversation>(
             r#"
-            SELECT id, user_id, status, title, metadata, created_at, updated_at, last_message_at
+            SELECT id, user_id, status, title, metadata, created_at, updated_at
             FROM conversations
             WHERE user_id = ?
-            ORDER BY last_message_at DESC, created_at DESC
+            ORDER BY updated_at DESC, created_at DESC
             LIMIT ? OFFSET ?
             "#,
         )
@@ -528,7 +525,7 @@ impl ConversationStore {
     ) -> Result<Option<Conversation>> {
         let conversation = sqlx::query_as::<_, Conversation>(
             r#"
-            SELECT id, user_id, status, title, metadata, created_at, updated_at, last_message_at
+            SELECT id, user_id, status, title, metadata, created_at, updated_at
             FROM conversations
             WHERE id = ?
             "#,
@@ -548,7 +545,7 @@ impl ConversationStore {
             SELECT 
                 COUNT(DISTINCT c.id) as total_conversations,
                 COUNT(m.id) as total_messages,
-                MAX(c.last_message_at) as last_interaction
+                MAX(c.updated_at) as last_interaction
             FROM conversations c
             LEFT JOIN conversation_messages m ON c.id = m.conversation_id
             WHERE c.user_id = ?
@@ -627,7 +624,7 @@ impl ConversationStore {
         let deleted_count = sqlx::query(
             r#"
             DELETE FROM conversations 
-            WHERE status = 'closed' AND last_message_at < ?
+            WHERE status = 'closed' AND updated_at < ?
             "#,
         )
         .bind(cutoff_timestamp)
@@ -639,26 +636,26 @@ impl ConversationStore {
         info!("Cleaned up {} old conversations", deleted_count);
         Ok(deleted_count)
     }
-    /// 关闭对话
-    pub async fn close_conversation(&self, user_id: &str) -> Result<()> {
+    /// 关闭超过一天的对话
+    pub async fn close_old_conversations(&self) -> Result<u64> {
+        // 计算一天前的时间戳（以秒为单位）
+        let one_day_ago = chrono::Utc::now().timestamp() - 24 * 60 * 60;
+
         let closed_count = sqlx::query(
             r#"
             UPDATE conversations
             SET status = 'closed'
-            WHERE user_id = ?
+            WHERE updated_at < ?
+            AND status = 'active'
             "#,
         )
-        .bind(user_id)
+        .bind(one_day_ago)
         .execute(&self.pool)
         .await
         .context("Failed to close conversation")?
         .rows_affected() as u64;
 
-        info!(
-            "Closed conversation for user: {}, closed count: {} success",
-            user_id, closed_count
-        );
-        Ok(())
+        Ok(closed_count)
     }
 
     /// 智能检测消息内容是否表示对话结束（简化版本）
@@ -780,10 +777,10 @@ impl ConversationStore {
         let conversations = if let Some(search_term) = search {
             sqlx::query_as::<_, Conversation>(
                 r#"
-                SELECT id, user_id, status, title, metadata, created_at, updated_at, last_message_at
+                SELECT id, user_id, status, title, metadata, created_at, updated_at
                 FROM conversations
                 WHERE user_id LIKE ? OR id LIKE ?
-                ORDER BY last_message_at DESC, created_at DESC
+                ORDER BY updated_at DESC, created_at DESC
                 LIMIT ? OFFSET ?
                 "#,
             )
@@ -797,9 +794,9 @@ impl ConversationStore {
         } else {
             sqlx::query_as::<_, Conversation>(
                 r#"
-                SELECT id, user_id, status, title, metadata, created_at, updated_at, last_message_at
+                SELECT id, user_id, status, title, metadata, created_at, updated_at
                 FROM conversations
-                ORDER BY last_message_at DESC, created_at DESC
+                ORDER BY updated_at DESC, created_at DESC
                 LIMIT ? OFFSET ?
                 "#,
             )

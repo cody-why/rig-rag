@@ -1,7 +1,10 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use arrow_array::{ArrayRef, FixedSizeListArray, RecordBatch, RecordBatchIterator, StringArray, TimestampMillisecondArray, types::Float64Type};
+use arrow_array::{
+    ArrayRef, FixedSizeListArray, RecordBatch, RecordBatchIterator, StringArray,
+    TimestampMillisecondArray, types::Float64Type,
+};
 use chrono::{DateTime, Utc};
 use futures::TryStreamExt;
 use lancedb::arrow::arrow_schema::{DataType, Field, Fields, Schema, TimeUnit};
@@ -9,7 +12,12 @@ use lancedb::index::vector::IvfPqIndexBuilder;
 use lancedb::query::{ExecutableQuery, QueryBase};
 use lancedb::table::OptimizeAction;
 use rig::embeddings::Embedding;
-use rig::{Embed, OneOrMany, embeddings::{EmbeddingModel, EmbeddingsBuilder}, vector_store::VectorStoreIndex, vector_store::request::VectorSearchRequest};
+use rig::{
+    Embed, OneOrMany,
+    embeddings::{EmbeddingModel, EmbeddingsBuilder},
+    vector_store::VectorStoreIndex,
+    vector_store::request::VectorSearchRequest,
+};
 use rig_lancedb::{LanceDbVectorIndex, SearchParams};
 use serde::{Deserialize, Deserializer, Serialize};
 use tracing::{debug, info, warn};
@@ -203,7 +211,10 @@ impl<M: EmbeddingModel> DocumentStore<M> {
 
     /// 向量搜索
     pub async fn search(
-        &self, vector_index: &LanceDbVectorIndex<M>, query: &str, limit: usize,
+        &self,
+        vector_index: &LanceDbVectorIndex<M>,
+        query: &str,
+        limit: usize,
     ) -> Result<Vec<(f64, Document)>> {
         let req = VectorSearchRequest::builder()
             .query(query)
@@ -272,20 +283,22 @@ impl<M: EmbeddingModel> DocumentStore<M> {
             Ok(count) => {
                 debug!("Table '{}' has {} documents", self.table_name, count);
                 Ok(count)
-            },
+            }
             Err(e) => {
                 warn!(
                     "Failed to count rows in table '{}': {}, returning 0",
                     self.table_name, e
                 );
                 Ok(0)
-            },
+            }
         }
     }
 
     /// 添加文档并生成 embeddings
     pub async fn add_documents_with_embeddings(
-        &self, documents: Vec<Document>, embedding_model: M,
+        &self,
+        documents: Vec<Document>,
+        embedding_model: M,
     ) -> Result<()>
     where
         M: Clone + Send + Sync + 'static,
@@ -407,17 +420,19 @@ impl<M: EmbeddingModel> DocumentStore<M> {
                 }
                 debug!("No batch returned for document id '{}'", id);
                 Ok(None)
-            },
+            }
             Err(e) => {
                 warn!("Failed to query document with id '{}': {}", id, e);
                 Ok(None)
-            },
+            }
         }
     }
 
     /// 分页获取文档
     pub async fn list_documents_paginated(
-        &self, limit: usize, offset: usize,
+        &self,
+        limit: usize,
+        offset: usize,
     ) -> Result<(Vec<Document>, usize)> {
         let db = lancedb::connect(&self.db_path)
             .execute()
@@ -473,7 +488,7 @@ impl<M: EmbeddingModel> DocumentStore<M> {
                             Err(e) => {
                                 warn!("Failed to parse document at row {}: {}", row_idx, e);
                                 continue;
-                            },
+                            }
                         }
                     }
                 }
@@ -490,7 +505,7 @@ impl<M: EmbeddingModel> DocumentStore<M> {
                     offset
                 );
                 Ok((result_docs, total))
-            },
+            }
             Err(e) => Err(anyhow::anyhow!("Failed to query documents: {}", e)),
         }
     }
@@ -597,7 +612,8 @@ impl<M: EmbeddingModel> DocumentStore<M> {
 
     /// 将文档和embeddings转换为RecordBatch
     fn as_record_batch(
-        records: Vec<(Document, OneOrMany<Embedding>)>, dims: usize,
+        records: Vec<(Document, OneOrMany<Embedding>)>,
+        dims: usize,
     ) -> Result<RecordBatch> {
         if records.is_empty() {
             return Err(anyhow::anyhow!(

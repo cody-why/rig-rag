@@ -1,6 +1,6 @@
 use std::{net::SocketAddr, sync::Arc};
 
-use rig_rag::{agent::RigAgent, config::AppConfig, db::{DocumentStore, UserStore}, web};
+use rig_rag::{agent::RigAgent, config::AppConfig, db::{ConversationStore, DocumentStore, UserStore}, web};
 use tracing::info;
 use tracing_subscriber::fmt::time::OffsetTime;
 
@@ -55,10 +55,30 @@ async fn main() {
         "Starting server on http://{}",
         listener.local_addr().unwrap()
     );
+    close_old_conversations().await;
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
     .await
     .unwrap();
+}
+
+async fn close_old_conversations() {
+    let conversation_store = ConversationStore::from_env()
+        .await
+        .expect("Failed to initialize conversation store");
+
+    tokio::spawn(async move {
+        loop {
+            let closed_count = conversation_store
+                .close_old_conversations()
+                .await
+                .unwrap_or(0);
+            if closed_count > 0 {
+                // info!("Closed {} conversations (older than 1 day)", closed_count);
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        }
+    });
 }

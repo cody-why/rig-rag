@@ -1,7 +1,16 @@
 use std::sync::atomic::{AtomicPtr, Ordering};
 
+use async_stream::stream;
+use futures::StreamExt;
 use parking_lot::RwLock;
-use rig::{agent::Agent, completion::Chat, prelude::CompletionClient, providers::openai::{self}};
+use rig::{
+    agent::{Agent, MultiTurnStreamItem, Text},
+    completion::Chat,
+    message::Reasoning,
+    prelude::CompletionClient,
+    providers::openai::{self},
+    streaming::{StreamedAssistantContent, StreamingChat},
+};
 use rig_lancedb::{LanceDbVectorIndex, SearchParams};
 
 use super::RigAgentBuilder;
@@ -32,8 +41,10 @@ impl RigAgent {
     }
 
     /// 动态聊天 - 使用当前最新的context构建临时agent进行聊天
-    pub async fn dynamic_chat(
-        &self, message: &str, history: Vec<rig::completion::Message>,
+    pub async fn chat(
+        &self,
+        message: &str,
+        history: Vec<rig::completion::Message>,
     ) -> anyhow::Result<String> {
         // 检查是否需要重建agent
         let needs_rebuild = {
@@ -60,6 +71,64 @@ impl RigAgent {
             .await
             .map_err(|e| anyhow::anyhow!("Chat error: {}", e))?;
         Ok(response)
+    }
+
+    /// 动态流式聊天 - 使用当前最新的context构建临时agent进行流式聊天
+    pub async fn stream_chat(
+        &self,
+        message: &str,
+        history: Vec<rig::completion::Message>,
+    ) -> anyhow::Result<impl futures::Stream<Item = String> + Unpin> {
+        // 检查是否需要重建agent
+        let needs_rebuild = {
+            let context = self.context.read();
+            context.needs_rebuild
+        };
+
+        if needs_rebuild {
+            tracing::info!("🔄 Agent needs rebuild, rebuilding with latest documents...");
+            // 重建agent以使用最新的文档
+            self.rebuild_with_sync().await?;
+        }
+
+        // 使用当前（可能已重建）的agent进行流式聊天
+        let agent_ptr = self.agent.load(Ordering::Acquire);
+        if agent_ptr.is_null() {
+            return Err(anyhow::anyhow!("Agent not initialized"));
+        }
+
+        // 安全地解引用原子指针
+        let agent = unsafe { &*agent_ptr };
+        let stream_request = agent.stream_chat(message, history);
+
+        // 创建一个简化的流，将复杂的流式响应转换为简单的字符串流
+        let stream = Box::pin(stream! {
+            let mut stream = stream_request.await;
+            while let Some(content) = stream.next().await {
+                match content {
+                    Ok(MultiTurnStreamItem::StreamItem(StreamedAssistantContent::Text(Text {
+                        text,
+                    }))) => {
+                        yield text;
+                    },
+                    Ok(MultiTurnStreamItem::StreamItem(StreamedAssistantContent::Reasoning(
+                        Reasoning { reasoning, .. },
+                    ))) => {
+                        yield reasoning.join("\n");
+                    },
+                    Ok(MultiTurnStreamItem::FinalResponse(_res)) => {
+                        // println!("Final response: {:?}", res);
+                    },
+                    Err(e) => {
+                        yield format!("Error: {}", e);
+                        break;
+                    },
+                    _ => {},
+                }
+            }
+        });
+
+        Ok(stream)
     }
 
     /// 重新构建整个RigAgent以应用最新的配置
@@ -99,7 +168,7 @@ impl RigAgent {
 
         let index = create_vector_index(&lancedb_config, &embedding_model).await?;
         let context = self.context.read();
-        let agent = context.build_with_vector_index(index);
+        let agent = context.build_with_vector_index(index.0, index.1);
         Ok(agent)
     }
 
@@ -132,11 +201,12 @@ impl RigAgentContext {
 
     /// 构建带有向量索引的RAG agent
     pub fn build_with_vector_index(
-        &self, vector_index: LanceDbVectorIndex<openai::EmbeddingModel>,
+        &self,
+        vector_index: LanceDbVectorIndex<openai::EmbeddingModel>,
+        top_k: usize,
     ) -> Agent<openai::CompletionModel> {
-        let top_k = 3; // 可以根据需要调整
+        let top_k = top_k.max(1);
         tracing::info!("✅ Building RAG agent with vector index, top_k={}", top_k);
-
         self.client
             .completion_model(&self.openai_model)
             .completions_api()
@@ -150,19 +220,20 @@ impl RigAgentContext {
     /// 构建带有向量索引的RAG agent
     pub async fn build(&self) -> anyhow::Result<Agent<openai::CompletionModel>> {
         let index = create_vector_index(&self.lancedb_config, &self.embedding_model).await?;
-        Ok(self.build_with_vector_index(index))
+        Ok(self.build_with_vector_index(index.0, index.1))
     }
 
     pub async fn create_vector_index(
         &self,
-    ) -> anyhow::Result<LanceDbVectorIndex<openai::EmbeddingModel>> {
+    ) -> anyhow::Result<(LanceDbVectorIndex<openai::EmbeddingModel>, usize)> {
         create_vector_index(&self.lancedb_config, &self.embedding_model).await
     }
 }
 
 pub async fn create_vector_index(
-    lancedb_config: &LanceDbConfig, embedding_model: &openai::EmbeddingModel,
-) -> anyhow::Result<LanceDbVectorIndex<openai::EmbeddingModel>> {
+    lancedb_config: &LanceDbConfig,
+    embedding_model: &openai::EmbeddingModel,
+) -> anyhow::Result<(LanceDbVectorIndex<openai::EmbeddingModel>, usize)> {
     let db = lancedb::connect(&lancedb_config.path).execute().await?;
     let names = db.table_names().execute().await?;
     if !names.contains(&lancedb_config.table_name) {
@@ -170,11 +241,12 @@ pub async fn create_vector_index(
     }
     let table = db.open_table(&lancedb_config.table_name).execute().await?;
 
+    let top_k = table.count_rows(None).await.unwrap_or(0) as usize;
     let search_params = SearchParams::default();
     let index =
         LanceDbVectorIndex::new(table, embedding_model.clone(), "id", search_params).await?;
 
-    Ok(index)
+    Ok((index, top_k))
 }
 
 /// 加载preamble - 从文件加载
@@ -184,7 +256,7 @@ pub fn load_preamble(preamble_file: &str) -> String {
         Ok(content) => {
             tracing::info!("✅ Loaded preamble from file: {}", preamble_file);
             content
-        },
+        }
         Err(e) => {
             tracing::warn!(
                 "⚠️ Failed to read preamble file {}: {}, using default",
@@ -192,6 +264,6 @@ pub fn load_preamble(preamble_file: &str) -> String {
                 e
             );
             preamble
-        },
+        }
     }
 }

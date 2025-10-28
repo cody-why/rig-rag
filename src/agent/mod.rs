@@ -1,4 +1,3 @@
-pub mod file_chunk;
 mod rig_agent;
 mod rig_agent_builder;
 

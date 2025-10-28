@@ -1,45 +1,59 @@
 use std::{env, sync::Arc};
 
 use anyhow::{Context, Result};
-use arrow_array::{ArrayRef, FixedSizeListArray, RecordBatch, RecordBatchIterator, StringArray, types::Float64Type};
+use arrow_array::{
+    ArrayRef, FixedSizeListArray, RecordBatch, RecordBatchIterator, StringArray, types::Float64Type,
+};
 use lancedb::arrow::arrow_schema::{DataType, Field, Fields, Schema};
-use rig::{Embed, OneOrMany, agent::Agent, completion::{Chat, Message}, embeddings::{Embedding, EmbeddingModel, EmbeddingsBuilder}, prelude::{CompletionClient, EmbeddingsClient}, providers::openai};
+use rig::{
+    Embed, OneOrMany,
+    agent::{Agent, stream_to_stdout},
+    completion::Message,
+    embeddings::{Embedding, EmbeddingModel, EmbeddingsBuilder},
+    prelude::{CompletionClient, EmbeddingsClient},
+    providers::openai,
+    streaming::StreamingChat,
+};
 use rig_lancedb::{LanceDbVectorIndex, SearchParams};
 use serde::Serialize;
 use tracing::info;
 
-/// Simplified reproduction code: Demonstrates base64 message conversion error in rig-core 0.22
-///
-/// Chat failed: CompletionError: RequestError: Message conversion error: Documents must be base64
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenv::dotenv().ok();
-    tracing_subscriber::fmt::init();
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .init();
 
     let openai_api_key = env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY must be set");
     let embedding_api_key = env::var("EMBEDDING_API_KEY").expect("EMBEDDING_API_KEY must be set");
+    let openai_base_url = env::var("OPENAI_BASE_URL").expect("OPENAI_BASE_URL must be set");
+
+    let embedding_base_url =
+        env::var("EMBEDDING_BASE_URL").expect("EMBEDDING_BASE_URL must be set");
+    let openai_model = env::var("OPENAI_MODEL").expect("OPENAI_MODEL must be set");
+    let embedding_model = env::var("EMBEDDING_MODEL").expect("EMBEDDING_MODEL must be set");
 
     println!("🚀 Starting reproduction code...");
 
     let client = openai::Client::builder(&openai_api_key)
-        .base_url("https://api.siliconflow.cn/v1")
-        .build()?;
+        .base_url(&openai_base_url)
+        .build();
 
     let embedding_client = openai::Client::builder(&embedding_api_key)
-        .base_url("https://api.siliconflow.cn/v1")
-        .build()?;
+        .base_url(&embedding_base_url)
+        .build();
 
-    let embedding_model = embedding_client.embedding_model("BAAI/bge-m3");
+    let embedding_model = embedding_client.embedding_model(&embedding_model);
 
     // Try to build RAG agent with vector index
     println!("📚 Trying to build RAG agent with vector index...");
 
-    match build_rag_agent(&client, &embedding_model).await {
+    match build_rag_agent(&client, &openai_model, &embedding_model).await {
         Ok(agent) => {
             println!("✅ RAG agent built successfully");
 
-            // Try to chat
-            println!("💬 Starting chat test...");
+            println!("🔍 Starting chat...");
 
             let message = "Hello, please introduce yourself";
             let history = vec![
@@ -47,18 +61,21 @@ async fn main() -> Result<()> {
                 Message::assistant("Previous response"),
             ];
 
-            match agent.chat(message, history).await {
-                Ok(response) => {
-                    println!("✅ Chat successful: {}", response);
-                },
-                Err(e) => {
-                    println!("❌ Chat failed: {}", e);
-                },
-            }
-        },
+            // match agent.chat(message, history).await {
+            //     Ok(response) => {
+            //         println!("✅ Chat successful: {}", response);
+            //     },
+            //     Err(e) => {
+            //         println!("❌ Chat failed: {}", e);
+            //     },
+            // }
+
+            let mut stream = agent.stream_chat(message, history).await;
+            stream_to_stdout(&mut stream).await?;
+        }
         Err(e) => {
             println!("❌ RAG agent build failed: {}", e);
-        },
+        }
     }
 
     Ok(())
@@ -66,7 +83,9 @@ async fn main() -> Result<()> {
 
 /// Build RAG agent with vector index
 async fn build_rag_agent(
-    client: &openai::Client, embedding_model: &openai::EmbeddingModel,
+    client: &openai::Client,
+    openai_model: &str,
+    embedding_model: &openai::EmbeddingModel,
 ) -> Result<Agent<openai::CompletionModel>> {
     let db = init_lancedb(embedding_model).await?;
     let table_name = "test_table";
@@ -81,7 +100,7 @@ async fn build_rag_agent(
     let top_k = 1;
     let agent = client
         // .agent("THUDM/GLM-4-9B-0414")
-        .completion_model("THUDM/GLM-4-9B-0414")
+        .completion_model(openai_model)
         .completions_api()
         .into_agent_builder()
         .temperature(0.5)
@@ -128,7 +147,9 @@ pub struct Document {
 }
 
 async fn add_documents(
-    db: &lancedb::Connection, table_name: &str, documents: Vec<Document>,
+    db: &lancedb::Connection,
+    table_name: &str,
+    documents: Vec<Document>,
     embedding_model: &openai::EmbeddingModel,
 ) -> Result<()> {
     if documents.is_empty() {
@@ -167,7 +188,8 @@ async fn add_documents(
 }
 
 fn as_record_batch(
-    records: Vec<(Document, OneOrMany<Embedding>)>, dims: usize,
+    records: Vec<(Document, OneOrMany<Embedding>)>,
+    dims: usize,
 ) -> Result<RecordBatch> {
     if records.is_empty() {
         return Err(anyhow::anyhow!(

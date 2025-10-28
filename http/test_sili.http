@@ -1,0 +1,61 @@
+@DASHSCOPE_API_KEY=sk-fyfidtpaqrybcnkehdvcfsykrgmqemzoxfopayoflwdgiwkm
+
+POST https://api.siliconflow.cn/v1/chat/completions
+Authorization: Bearer {{DASHSCOPE_API_KEY}}
+Content-Type: application/json
+
+{
+    "messages": [
+      {
+        "content": [
+          {
+            "text": "You are a helpful AI assistant.",
+            "type": "text"
+          }
+        ],
+        "role": "system"
+      },
+      {
+        "content": [
+          {
+            "text": "<file id: 1>\n{\n  \"_distance\": 0.4767230749130249,\n  \"content\": \"Hello, world!\",\n  \"id\": \"1\",\n  \"source\": \"sample\"\n}\n</file>\n",
+            "type": "text"
+          }
+        ],
+        "role": "user"
+      },
+      {
+        "content": [
+          {
+            "text": "Previous message",
+            "type": "text"
+          }
+        ],
+        "role": "user"
+      },
+      {
+        "content": [
+          {
+            "text": "Previous response",
+            "type": "text"
+          }
+        ],
+        "role": "assistant"
+      },
+      {
+        "content": [
+          {
+            "text": "Hello, please introduce yourself",
+            "type": "text"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "model": "THUDM/GLM-4-9B-0414",
+    "stream": true,
+    "stream_options": {
+        "include_usage": true
+    },
+    "temperature": 0.5
+}

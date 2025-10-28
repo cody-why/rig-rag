@@ -6,7 +6,10 @@ use rig::providers::openai::Client;
 use tracing::{debug, info};
 
 use super::rig_agent::RigAgent;
-use crate::{agent::rig_agent::{RigAgentContext, load_preamble}, config::AppConfig};
+use crate::{
+    agent::rig_agent::{RigAgentContext, load_preamble},
+    config::AppConfig,
+};
 pub struct RigAgentBuilder {
     config: AppConfig,
 }
@@ -57,11 +60,11 @@ impl RigAgentBuilder {
             Ok(agent) => {
                 info!("ℹ️ Building RAG agent with vector index");
                 agent
-            },
+            }
             Err(e) => {
                 info!("ℹ️ No vector index available ({}), using basic agent", e);
                 context.build_basic()
-            },
+            }
         };
 
         info!("✅ RigAgent initialized successfully");
@@ -84,14 +87,13 @@ impl RigAgentBuilder {
             .build();
 
         debug!("OpenAI client initialized successfully");
-        client.unwrap()
+        client
     }
 
     fn init_embedding_client(&self) -> rig::providers::openai::EmbeddingModel {
         let embedding_client = Client::builder(&self.config.embedding_api_key)
             .base_url(&self.config.embedding_url)
-            .build()
-            .unwrap();
+            .build();
 
         let model = embedding_client.embedding_model(&self.config.embedding_model);
 

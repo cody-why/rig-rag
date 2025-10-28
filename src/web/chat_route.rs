@@ -1,9 +1,11 @@
 use std::sync::Arc;
 
-use axum::{Router, extract::{Json, Path, State}, routing::{get, post}};
+use axum::{Router, extract::{Json, Path, State}, response::sse::{Event, Sse}, routing::{get, post}};
+use futures::StreamExt;
 use parking_lot::RwLock;
 use rig::{completion::Message, message::{AssistantContent, UserContent}};
 use serde::{Deserialize, Serialize};
+use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::{error, info};
 
 use crate::{agent::RigAgent, db::{ConversationStore, CreateMessageRequest, DocumentStore, MessageRole}, web::chat_store};
@@ -31,6 +33,7 @@ pub struct ChatHistoryItem {
 pub fn create_chat_router() -> Router<ChatAppState> {
     Router::new()
         .route("/api/chat", post(handle_chat))
+        .route("/api/chat/stream", post(handle_stream_chat))
         .route("/api/history/{user_id}", get(get_chat_history))
 }
 
@@ -85,23 +88,20 @@ pub async fn handle_chat(
     } else {
         let h = Arc::new(RwLock::new(Vec::new()));
         chat_store().insert(user_id.clone(), h.clone());
-        // 关闭历史对话
-        let _ = conversation_store.close_conversation(&user_id).await;
         h
     };
 
     // 使用 RigAgent 处理聊天请求
     let history_snapshot = { chat_history.read().clone() };
-    let response = match agent.dynamic_chat(message, history_snapshot).await {
+    let response = match agent.chat(message, history_snapshot).await {
         Ok(response) => {
             if !is_meaningless_message(message) {
                 // 更新内存缓存
                 {
-                    let history_arc = chat_history.clone();
-                    let mut history = history_arc.write();
+                    let mut history = chat_history.write();
                     history.push(Message::user(message));
                     history.push(Message::assistant(&response));
-                    // 保存历史记录条数上限（最多保留最近 10 条）
+                    // 保存历史记录条数上限
                     let excess = history.len().saturating_sub(10);
                     if excess > 0 {
                         for _ in 0..excess {
@@ -167,6 +167,143 @@ pub async fn handle_chat(
     };
 
     Json(ChatResponse { response, user_id })
+}
+
+/// 流式聊天处理器
+pub async fn handle_stream_chat(
+    State((agent, _, conversation_store)): State<ChatAppState>, Json(payload): Json<ChatRequest>,
+) -> Sse<impl futures::Stream<Item = Result<Event, axum::Error>>> {
+    // 从请求中获取用户 ID 或生成一个新的
+    let no_id = payload.user_id.is_none();
+    let user_id = payload.user_id.unwrap_or_else(generate_user_id);
+    let message = payload.message.trim().to_string();
+
+    info!(
+        "Received stream chat request from user {}: {}",
+        user_id, message
+    );
+
+    // 从内存缓存获取或初始化聊天历史
+    let chat_history = if let Some(h) = chat_store().get(&user_id) {
+        h
+    } else {
+        let h = Arc::new(RwLock::new(Vec::new()));
+        chat_store().insert(user_id.clone(), h.clone());
+        h
+    };
+
+    // 获取用户历史
+    // let history_snapshot = {
+    //     chat_history
+    //         .read()
+    //         .iter()
+    //         .filter(|msg| matches!(msg, Message::User { .. }))
+    //         .cloned()
+    //         .collect::<Vec<Message>>()
+    // };
+
+    let history_snapshot = { chat_history.read().clone() };
+
+    // 创建流式响应
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+
+    // 在后台任务中处理流
+    let user_id_clone = user_id.clone();
+    let message_clone = message.clone();
+    let chat_history_clone = chat_history.clone();
+    let conversation_store_clone = conversation_store.clone();
+    let agent_clone = agent.clone();
+
+    tokio::spawn(async move {
+        match agent_clone
+            .stream_chat(&message_clone, history_snapshot)
+            .await
+        {
+            Ok(mut stream) => {
+                let mut full_response = String::new();
+
+                if no_id {
+                    let _ = tx.send(Ok(Event::default().event("user_id").data(user_id)));
+                }
+
+                while let Some(chunk) = stream.next().await {
+                    full_response.push_str(&chunk);
+                    let chunk = chunk.replace("\n", "[LF]");
+                    let _ = tx.send(Ok(Event::default().data(chunk)));
+                }
+
+                // 发送完成信号
+                let _ = tx.send(Ok(Event::default().data("[DONE]")));
+
+                // 保存到数据库
+                if !is_meaningless_message(&message_clone) {
+                    // 更新内存缓存
+                    {
+                        let mut history = chat_history_clone.write();
+                        history.push(Message::user(&message_clone));
+                        history.push(Message::assistant(&full_response));
+                        // 保存历史记录条数上限
+                        let excess = history.len().saturating_sub(10);
+                        if excess > 0 {
+                            for _ in 0..excess {
+                                if history.is_empty() {
+                                    break;
+                                }
+                                let _ = history.remove(0);
+                            }
+                        }
+                    }
+
+                    // 获取或创建活跃对话用于数据库存储
+                    if let Ok(conversation) = conversation_store_clone
+                        .get_or_create_active_conversation(&user_id_clone)
+                        .await
+                    {
+                        // 保存用户消息到数据库
+                        let user_message_req = CreateMessageRequest {
+                            conversation_id: conversation.id.clone(),
+                            role: MessageRole::User,
+                            content: message_clone.clone(),
+                            metadata: None,
+                        };
+
+                        if let Err(e) = conversation_store_clone.add_message(user_message_req).await
+                        {
+                            error!("Failed to save user message to database: {}", e);
+                        }
+
+                        if let Err(e) = conversation_store_clone
+                            .smart_close_conversation_if_needed(&conversation.id, &message_clone)
+                            .await
+                        {
+                            error!("Failed to check smart close: {}", e);
+                        }
+
+                        // 保存AI响应到数据库
+                        let assistant_message_req = CreateMessageRequest {
+                            conversation_id: conversation.id.clone(),
+                            role: MessageRole::Assistant,
+                            content: full_response,
+                            metadata: None,
+                        };
+
+                        if let Err(e) = conversation_store_clone
+                            .add_message(assistant_message_req)
+                            .await
+                        {
+                            error!("Failed to save assistant message to database: {}", e);
+                        }
+                    }
+                }
+            },
+            Err(e) => {
+                error!("Error creating stream chat: {}", e);
+                let _ = tx.send(Ok(Event::default().data(format!("Error: {}", e))));
+            },
+        }
+    });
+
+    Sse::new(UnboundedReceiverStream::new(rx)).keep_alive(axum::response::sse::KeepAlive::default())
 }
 
 pub async fn get_chat_history(

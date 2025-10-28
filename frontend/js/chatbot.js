@@ -379,6 +379,11 @@ class RigChat {
             overflow-x: auto;
             margin: 10px 0;
         }
+
+        /* Streaming content preserves newlines during incremental updates */
+        .stream-content {
+            white-space: pre-wrap;
+        }
         
         .rig-bot-message table {
             border-collapse: collapse;
@@ -769,10 +774,10 @@ class RigChat {
             // 从本地存储获取用户ID
             let userId = localStorage.getItem('rig_chat_user_id');
             
-            // 构建API URL
-            const apiUrl = `${this.config.apiBase}/api/chat`;
+            // 构建API URL - 使用流式聊天端点
+            const apiUrl = `${this.config.apiBase}/api/chat/stream`;
             
-            // 发送请求
+            // 发送流式请求
             const response = await fetch(apiUrl, {
                 method: 'POST',
                 headers: {
@@ -784,23 +789,131 @@ class RigChat {
                 }),
             });
             
-            const data = await response.json();
-            
-            // 如果是新用户，保存用户ID
-            if (!userId && data.user_id) {
-                userId = data.user_id;
-                localStorage.setItem('rig_chat_user_id', userId);
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
             }
             
             // 移除加载指示器
             this.removeLoadingIndicator(loadingId);
+            // 处理流式响应
+            await this.handleStreamResponse(response);
             
-            // 添加响应消息
-            this.addMessage(data.response, false);
         } catch (error) {
             console.error('Error:', error);
             this.removeLoadingIndicator(loadingId);
             this.addMessage('Sorry, there was an error processing your message.', false);
+        }
+    }
+
+    // 处理流式响应
+    async handleStreamResponse(response) {
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        
+        const streamMessageId = this.addStreamMessage();
+        try {
+            while (true) {
+                const { done, value } = await reader.read();
+                
+                if (done) {
+                    break;
+                }
+                
+                // 解码数据
+                const chunk = decoder.decode(value, { stream: true });
+                const lines = chunk.split('\n\n');
+                console.log(lines);
+                for (const line of lines) {
+                    if (line.startsWith('data: ')) {
+                        const data = line.slice(6);
+                        if (data === '[DONE]') {
+                            // 流结束
+                            this.finalizeStreamMessage(streamMessageId);
+                            return;
+                        }
+                        // 更新流式消息
+                        this.updateStreamMessage(streamMessageId, data.replace(/\[LF\]/g, '\n'));
+                    }
+                    else if (line.startsWith('event: user_id\ndata: ')) {
+                        const event = line.slice(21).trim();
+                       // 保存user_id
+                       localStorage.setItem('rig_chat_user_id', event);
+                    }
+                }
+            }
+        } catch (error) {
+            console.error('Stream reading error:', error);
+            this.removeStreamMessage(streamMessageId);
+            this.addMessage('Sorry, there was an error reading the stream.', false);
+        }
+    }
+
+    // 添加流式消息容器
+    addStreamMessage() {
+        const messagesContainer = document.getElementById('rig-chat-messages');
+        
+        const bubble = document.createElement('div');
+        bubble.className = 'rig-message-bubble rig-bot-message message-animation';
+        bubble.id = 'rig-stream-' + Date.now();
+        
+        const content = document.createElement('div');
+        content.className = 'stream-content';
+        content.textContent = '';
+        
+        bubble.appendChild(content);
+        messagesContainer.appendChild(bubble);
+        messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        
+        return bubble.id;
+    }
+
+    // 更新流式消息内容
+    updateStreamMessage(messageId, text) {
+        const messageElement = document.getElementById(messageId);
+        if (messageElement) {
+            const contentElement = messageElement.querySelector('.stream-content');
+            if (contentElement) {
+                contentElement.textContent += text;
+                // 自动滚动到底部
+                const messagesContainer = document.getElementById('rig-chat-messages');
+                messagesContainer.scrollTop = messagesContainer.scrollHeight;
+            }
+        }
+    }
+
+    // 完成流式消息（处理Markdown等）
+    finalizeStreamMessage(messageId) {
+        const messageElement = document.getElementById(messageId);
+        if (messageElement) {
+            const contentElement = messageElement.querySelector('.stream-content');
+            if (contentElement && window.marked) {
+                const content = contentElement.textContent;
+                
+                // 检测是否包含Markdown语法
+                const hasMarkdown = /([*_~`]|#{1,6}|\[[^\]]+\]\([^)]+\)|```|\|[-|]|>|^\d+\.|^\s*[-*+])/.test(content);
+                
+                if (hasMarkdown) {
+                    // 特殊处理表格，确保表格前后有空行
+                    const processedContent = content.replace(/(\n|^)(\|[^\n]+\|)(\n|$)/g, "\n$2\n");
+                    
+                    try {
+                        contentElement.innerHTML = marked.parse(processedContent);
+                        // After final render, normal flow formatting is preferred
+                        contentElement.classList.remove('stream-content');
+                    } catch (e) {
+                        console.error("Markdown parsing error:", e);
+                        // 如果解析失败，保持原文本
+                    }
+                }
+            }
+        }
+    }
+
+    // 移除流式消息
+    removeStreamMessage(messageId) {
+        const messageElement = document.getElementById(messageId);
+        if (messageElement) {
+            messageElement.remove();
         }
     }
 
