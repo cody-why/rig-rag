@@ -143,8 +143,7 @@ async fn add_documents(
         .await
         .context("Failed to build embeddings")?;
 
-    // the actual dimensions of the embeddings
-    let actual_dims = if let Some((_, emb)) = embeddings.first() {
+    let dims = if let Some((_, emb)) = embeddings.first() {
         emb.first().vec.len()
     } else {
         embedding_model.ndims()
@@ -152,8 +151,8 @@ async fn add_documents(
 
     // the record batch
     let record_batch =
-        as_record_batch(embeddings, actual_dims).context("Failed to create record batch")?;
-    let schema = create_schema(actual_dims);
+        as_record_batch(embeddings, dims).context("Failed to create record batch")?;
+    let schema = create_schema(dims);
 
     db.create_table(
         table_name,
@@ -181,13 +180,6 @@ fn as_record_batch(
         StringArray::from_iter_values(records.iter().map(|(doc, _)| doc.content.clone()));
     let sources = StringArray::from_iter_values(records.iter().map(|(doc, _)| doc.source.clone()));
 
-    // the actual dimensions of the embeddings
-    let actual_dims = if let Some((_, emb)) = records.first() {
-        emb.first().vec.len()
-    } else {
-        dims
-    };
-
     let embeddings = FixedSizeListArray::from_iter_primitive::<Float64Type, _, _>(
         records
             .into_iter()
@@ -202,7 +194,7 @@ fn as_record_batch(
                 )
             })
             .collect::<Vec<_>>(),
-        actual_dims as i32,
+        dims as i32,
     );
 
     RecordBatch::try_from_iter(vec![

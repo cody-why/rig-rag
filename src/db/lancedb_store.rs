@@ -5,6 +5,7 @@ use arrow_array::{ArrayRef, FixedSizeListArray, RecordBatch, RecordBatchIterator
 use chrono::{DateTime, Utc};
 use futures::TryStreamExt;
 use lancedb::arrow::arrow_schema::{DataType, Field, Fields, Schema, TimeUnit};
+use lancedb::index::vector::IvfPqIndexBuilder;
 use lancedb::query::{ExecutableQuery, QueryBase};
 use lancedb::table::OptimizeAction;
 use rig::embeddings::Embedding;
@@ -239,21 +240,6 @@ impl<M: EmbeddingModel> DocumentStore<M> {
         Ok(documents)
     }
 
-    /// 返回自身用于 RAG 动态上下文
-    pub fn get_vector_index(&self) -> Option<&Self> {
-        Some(self)
-    }
-
-    /// 返回一个合理的默认文档数量
-    /// 注意：这是一个同步方法，无法异步查询真实数量，所以返回一个保守的估计
-    #[allow(clippy::len_without_is_empty)]
-    pub fn len(&self) -> usize {
-        // 对于新创建的空表，返回 0
-        // 对于已存在的表，返回一个合理的默认值
-        // 实际使用中应该调用 count_documents_async() 获取真实数量
-        1 // 返回最小值，确保 RAG 能正常工作但不会误导用户
-    }
-
     /// 异步获取真实的文档数量
     pub async fn count_documents_async(&self) -> Result<usize> {
         let db = lancedb::connect(&self.db_path)
@@ -320,19 +306,17 @@ impl<M: EmbeddingModel> DocumentStore<M> {
             .context("Failed to build embeddings")?;
 
         // 维度
-        let actual_dims = if let Some((_, emb)) = embeddings.first() {
+        let dims = if let Some((_, emb)) = embeddings.first() {
             emb.first().vec.len()
         } else {
             embedding_model.ndims()
         };
 
-        debug!("Using embedding dimensions: {}", actual_dims);
-
+        debug!("Using embedding dimensions: {}", dims);
         // 记录批
-        let record_batch = Self::as_record_batch(embeddings, actual_dims)
-            .context("Failed to create record batch")?;
-        let schema = Self::create_schema(actual_dims);
-
+        let record_batch =
+            Self::as_record_batch(embeddings, dims).context("Failed to create record batch")?;
+        let schema = Self::create_schema(dims);
         // 打开数据库
         let db = lancedb::connect(&self.db_path)
             .execute()
@@ -346,28 +330,30 @@ impl<M: EmbeddingModel> DocumentStore<M> {
             .context("Failed to list table names")?
             .contains(&self.table_name);
 
-        if table_exists {
+        let batch_reader = RecordBatchIterator::new(vec![Ok(record_batch)], Arc::new(schema));
+
+        let table = if table_exists {
             let table = db
                 .open_table(&self.table_name)
                 .execute()
                 .await
                 .context("Failed to open existing table")?;
-            let batch_reader = RecordBatchIterator::new(vec![Ok(record_batch)], Arc::new(schema));
             table
                 .add(batch_reader)
                 .execute()
                 .await
                 .context("Failed to add documents to existing table")?;
+            table
         } else {
             info!("Creating new table '{}'", self.table_name);
-            db.create_table(
-                &self.table_name,
-                RecordBatchIterator::new(vec![Ok(record_batch)], Arc::new(schema)),
-            )
-            .execute()
-            .await
-            .context("Failed to create new table")?;
-        }
+
+            db.create_table(&self.table_name, batch_reader)
+                .execute()
+                .await
+                .context("Failed to create new table")?
+        };
+
+        self.rebuild_index(&table).await?;
 
         info!(
             "Successfully added {} documents to table '{}'",
@@ -572,15 +558,10 @@ impl<M: EmbeddingModel> DocumentStore<M> {
             .contains(&self.table_name);
 
         if table_exists {
-            db.drop_table(&self.table_name)
+            db.drop_table(&self.table_name, &[])
                 .await
                 .context("Failed to drop table")?;
             info!("🗑️ Dropped table '{}'", self.table_name);
-        } else {
-            debug!(
-                "Table '{}' does not exist, nothing to reset",
-                self.table_name
-            );
         }
 
         info!("🔄 Table reset, vector index will be rebuilt by RigAgent when needed");
@@ -642,17 +623,10 @@ impl<M: EmbeddingModel> DocumentStore<M> {
                 .map(|(doc, _)| doc.updated_at.timestamp_millis()),
         );
 
-        // 获取实际的embedding维度
-        let actual_dims = if let Some((_, emb)) = records.first() {
-            emb.first().vec.len()
-        } else {
-            dims
-        };
-
-        debug!(
+        info!(
             "Creating RecordBatch with {} records and {} dimensions",
             records.len(),
-            actual_dims
+            dims
         );
 
         let embeddings = FixedSizeListArray::from_iter_primitive::<Float64Type, _, _>(
@@ -669,7 +643,7 @@ impl<M: EmbeddingModel> DocumentStore<M> {
                     )
                 })
                 .collect::<Vec<_>>(),
-            actual_dims as i32,
+            dims as i32,
         );
 
         RecordBatch::try_from_iter(vec![
@@ -681,5 +655,58 @@ impl<M: EmbeddingModel> DocumentStore<M> {
             ("embedding", Arc::new(embeddings) as ArrayRef),
         ])
         .map_err(|e| anyhow::anyhow!("Failed to create RecordBatch: {}", e))
+    }
+
+    /// 重建索引
+    pub async fn rebuild_index(&self, table: &lancedb::Table) -> Result<()> {
+        // See [LanceDB indexing](https://lancedb.github.io/lancedb/concepts/index_ivfpq/#product-quantization) for more information
+        if table.index_stats("embedding").await?.is_none() {
+            // 检查数据量，IVF-PQ索引需要足够的数据进行训练
+            let row_count = table.count_rows(None).await.unwrap_or(0);
+
+            if row_count < 100 {
+                info!(
+                    "Skipping index creation: only {} rows available, need at least 100 rows for IVF-PQ index",
+                    row_count
+                );
+                return Ok(());
+            }
+
+            info!("Creating IVF-PQ index for {} rows", row_count);
+
+            // 根据数据量调整索引参数
+            // 对于小数据集，使用较少的分区
+            let num_partitions = if row_count < 1000 {
+                8.min(row_count as u32 / 2).max(2)
+            } else {
+                128
+            };
+
+            // 设置合适的子向量数量
+            let num_sub_vectors = if row_count < 100 { 8 } else { 96 };
+
+            debug!(
+                "Creating index with {} partitions and {} sub-vectors for {} rows",
+                num_partitions, num_sub_vectors, row_count
+            );
+
+            table
+                .create_index(
+                    &["embedding"],
+                    lancedb::index::Index::IvfPq(
+                        IvfPqIndexBuilder::default()
+                            .num_partitions(num_partitions)
+                            .num_sub_vectors(num_sub_vectors),
+                    ),
+                )
+                .execute()
+                .await
+                .context("Failed to create index")?;
+
+            info!("Successfully created IVF-PQ index");
+        } else {
+            debug!("Index already exists, skipping creation");
+        }
+        Ok(())
     }
 }

@@ -7,12 +7,11 @@ edition = "2024"
 tokio = { version = "1", features = ["full"] }
 # git="https://github.com/0xPlaygrounds/rig"
 rig-core = { version = "0.21", features = ["derive", "rayon", "reqwest-rustls"], default-features = false }
-rig-derive = "0.1"
 
 # rig-lancedb = { version = "0.2", features = ["rig-rustls"], default-features = false }
-rig-lancedb = { version = "=0.2.23", default-features = false }
-lancedb = { version = "0.21"}
-arrow-array = "55"
+rig-lancedb = { version = "=0.2.23", path = "crates/rig-lancedb-0.2.23"}
+lancedb = { version = "0.22"}
+arrow-array = "56"
 
 chrono = { version = "0.4", features = ["serde"] }
 dotenv = "0.15"
@@ -53,8 +52,8 @@ quick-xml = "0.38"
 encoding_rs = "0.8"
 chardetng = "0.1"
 
-# 交叉编译不需要系统的 OpenSSL, rig-lancedb 依赖
-openssl = { version = "0.10", features = ["vendored"] }
+# musl need OpenSSL
+# openssl = { version = "0.10", features = ["vendored"] }
 
 
 [lints.clippy]

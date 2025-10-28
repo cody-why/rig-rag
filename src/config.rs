@@ -42,6 +42,7 @@ impl AppConfig {
     pub fn from_env() -> Self {
         let openai_api_key = env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY must be set");
         let openai_base_url = env::var("OPENAI_BASE_URL").expect("OPENAI_BASE_URL must be set");
+
         Self {
             lancedb: LanceDbConfig::from_env(),
             preamble_file: env::var("PREAMBLE_FILE")

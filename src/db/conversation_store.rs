@@ -213,6 +213,9 @@ impl ConversationStore {
                 CREATE INDEX IF NOT EXISTS idx_conversations_user_id ON conversations(user_id);
                 CREATE INDEX IF NOT EXISTS idx_conversations_status ON conversations(status);
                 CREATE INDEX IF NOT EXISTS idx_conversations_created_at ON conversations(created_at);
+                CREATE INDEX IF NOT EXISTS idx_conversations_last_message_at ON conversations(last_message_at);
+                CREATE INDEX IF NOT EXISTS idx_conversations_status_last_message ON conversations(status, last_message_at);
+                CREATE INDEX IF NOT EXISTS idx_conversations_status_created_at ON conversations(status, created_at);
                 "#,
             )
             .execute(&self.pool)
@@ -563,8 +566,8 @@ impl ConversationStore {
             total_conversations: stats.0,
             total_messages: stats.1,
             last_interaction,
-            avg_session_duration: None, // TODO: 实现会话时长计算
-            satisfaction_score: None,   // TODO: 实现满意度评分
+            avg_session_duration: None,
+            satisfaction_score: None,
         })
     }
 
@@ -635,6 +638,88 @@ impl ConversationStore {
 
         info!("Cleaned up {} old conversations", deleted_count);
         Ok(deleted_count)
+    }
+    /// 关闭对话
+    pub async fn close_conversation(&self, user_id: &str) -> Result<()> {
+        let closed_count = sqlx::query(
+            r#"
+            UPDATE conversations
+            SET status = 'closed'
+            WHERE user_id = ?
+            "#,
+        )
+        .bind(user_id)
+        .execute(&self.pool)
+        .await
+        .context("Failed to close conversation")?
+        .rows_affected() as u64;
+
+        info!(
+            "Closed conversation for user: {}, closed count: {} success",
+            user_id, closed_count
+        );
+        Ok(())
+    }
+
+    /// 智能检测消息内容是否表示对话结束（简化版本）
+    pub fn detect_conversation_end_indicators(message: &str) -> bool {
+        let msg = message.to_lowercase();
+
+        // 简化的结束语检测
+        let end_words = [
+            "再见",
+            "拜拜",
+            "结束",
+            "完成",
+            "好了",
+            "谢谢",
+            "感谢",
+            "没问题",
+            "明白了",
+            "搞定",
+            "解决",
+            "bye",
+            "goodbye",
+            "thanks",
+            "thank you",
+            "done",
+            "finished",
+            "completed",
+            "perfect",
+            "great",
+        ];
+
+        end_words.iter().any(|word| msg.contains(word))
+    }
+
+    /// 智能关闭对话（简化版本）
+    pub async fn smart_close_conversation_if_needed(
+        &self, conversation_id: &str, user_message: &str,
+    ) -> Result<bool> {
+        if !Self::detect_conversation_end_indicators(user_message) {
+            return Ok(false);
+        }
+
+        // 直接关闭对话
+        let _ = self
+            .update_conversation(
+                conversation_id,
+                crate::db::UpdateConversationRequest {
+                    status: Some(ConversationStatus::Closed),
+                    title: None,
+                    metadata: Some(serde_json::json!({
+                        "auto_closed_reason": "user_indicated_end",
+                        "closed_at": Utc::now().to_rfc3339()
+                    })),
+                },
+            )
+            .await;
+
+        info!(
+            "Smart-closed conversation {} due to end indicators",
+            conversation_id
+        );
+        Ok(true)
     }
 
     /// 获取对话统计信息

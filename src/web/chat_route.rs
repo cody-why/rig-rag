@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use axum::{Router, extract::{Json, Path, State}, routing::{get, post}};
+use parking_lot::RwLock;
 use rig::{completion::Message, message::{AssistantContent, UserContent}};
 use serde::{Deserialize, Serialize};
 use tracing::{error, info};
@@ -82,8 +83,10 @@ pub async fn handle_chat(
     let chat_history = if let Some(h) = chat_store().get(&user_id) {
         h
     } else {
-        let h = Arc::new(parking_lot::RwLock::new(Vec::new()));
+        let h = Arc::new(RwLock::new(Vec::new()));
         chat_store().insert(user_id.clone(), h.clone());
+        // 关闭历史对话
+        let _ = conversation_store.close_conversation(&user_id).await;
         h
     };
 
@@ -134,6 +137,13 @@ pub async fn handle_chat(
                     error!("Failed to save user message to database: {}", e);
                 }
 
+                if let Err(e) = conversation_store
+                    .smart_close_conversation_if_needed(&conversation.id, message)
+                    .await
+                {
+                    error!("Failed to check smart close: {}", e);
+                }
+
                 // 保存AI响应到数据库
                 let assistant_message_req = CreateMessageRequest {
                     conversation_id: conversation.id.clone(),
@@ -163,36 +173,33 @@ pub async fn get_chat_history(
     State((_, _, _)): State<ChatAppState>, Path(user_id): Path<String>,
 ) -> Json<Vec<ChatHistoryItem>> {
     // 获取或初始化
-    let history_arc = if let Some(h) = chat_store().get(&user_id) {
-        h
+    let history = chat_store().get(&user_id);
+    if let Some(h) = history {
+        let history_items = h
+            .read()
+            .iter()
+            .filter_map(|msg| match msg {
+                Message::User { content } => match content.first() {
+                    UserContent::Text(text) => Some(ChatHistoryItem {
+                        role: "user".to_string(),
+                        content: text.text.clone(),
+                    }),
+                    _ => None,
+                },
+                Message::Assistant { id: _, content } => match content.first() {
+                    AssistantContent::Text(text) => Some(ChatHistoryItem {
+                        role: "assistant".to_string(),
+                        content: text.text.clone(),
+                    }),
+                    _ => None,
+                },
+            })
+            .collect();
+
+        Json(history_items)
     } else {
-        let h = Arc::new(parking_lot::RwLock::new(Vec::new()));
-        chat_store().insert(user_id.clone(), h.clone());
-        h
-    };
-
-    let history_items = history_arc
-        .read()
-        .iter()
-        .filter_map(|msg| match msg {
-            Message::User { content } => match content.first() {
-                UserContent::Text(text) => Some(ChatHistoryItem {
-                    role: "user".to_string(),
-                    content: text.text.clone(),
-                }),
-                _ => None,
-            },
-            Message::Assistant { id: _, content } => match content.first() {
-                AssistantContent::Text(text) => Some(ChatHistoryItem {
-                    role: "assistant".to_string(),
-                    content: text.text.clone(),
-                }),
-                _ => None,
-            },
-        })
-        .collect();
-
-    Json(history_items)
+        Json(Vec::new())
+    }
 }
 
 fn generate_user_id() -> String {
