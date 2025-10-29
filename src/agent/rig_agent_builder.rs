@@ -3,7 +3,7 @@ use std::sync::atomic::AtomicPtr;
 use parking_lot::RwLock;
 use rig::prelude::EmbeddingsClient;
 use rig::providers::openai::Client;
-use tracing::{debug, info};
+use tracing::info;
 
 use super::rig_agent::RigAgent;
 use crate::{
@@ -82,12 +82,9 @@ impl RigAgentBuilder {
 
     /// 初始化OpenAI客户端
     fn init_openai_client(&self) -> rig::providers::openai::Client {
-        let client = Client::builder(&self.config.openai_api_key)
+        Client::builder(&self.config.openai_api_key)
             .base_url(&self.config.openai_base_url)
-            .build();
-
-        debug!("OpenAI client initialized successfully");
-        client
+            .build()
     }
 
     fn init_embedding_client(&self) -> rig::providers::openai::EmbeddingModel {
@@ -95,9 +92,6 @@ impl RigAgentBuilder {
             .base_url(&self.config.embedding_url)
             .build();
 
-        let model = embedding_client.embedding_model(&self.config.embedding_model);
-
-        debug!("OpenAI clients initialized successfully");
-        model
+        embedding_client.embedding_model(&self.config.embedding_model)
     }
 }

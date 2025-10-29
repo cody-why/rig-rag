@@ -249,7 +249,8 @@ impl ConversationStore {
 
     /// 创建新对话
     pub async fn create_conversation(
-        &self, req: CreateConversationRequest,
+        &self,
+        req: CreateConversationRequest,
     ) -> Result<Conversation> {
         let id = nanoid::nanoid!();
         let now = Utc::now();
@@ -371,11 +372,6 @@ impl ConversationStore {
         // 提交事务
         tx.commit().await.context("Failed to commit transaction")?;
 
-        debug!(
-            "Added message: {} to conversation: {}",
-            id, req.conversation_id
-        );
-
         Ok(ConversationMessage {
             id,
             conversation_id: req.conversation_id,
@@ -388,7 +384,10 @@ impl ConversationStore {
 
     /// 获取对话消息历史
     pub async fn get_conversation_messages(
-        &self, conversation_id: &str, limit: Option<i64>, offset: Option<i64>,
+        &self,
+        conversation_id: &str,
+        limit: Option<i64>,
+        offset: Option<i64>,
     ) -> Result<Vec<ConversationMessage>> {
         let limit = limit.unwrap_or(50);
         let offset = offset.unwrap_or(0);
@@ -414,7 +413,10 @@ impl ConversationStore {
 
     /// 获取用户的对话列表
     pub async fn get_user_conversations(
-        &self, user_id: &str, limit: Option<i64>, offset: Option<i64>,
+        &self,
+        user_id: &str,
+        limit: Option<i64>,
+        offset: Option<i64>,
     ) -> Result<Vec<Conversation>> {
         let limit = limit.unwrap_or(20);
         let offset = offset.unwrap_or(0);
@@ -440,7 +442,9 @@ impl ConversationStore {
 
     /// 更新对话状态
     pub async fn update_conversation(
-        &self, conversation_id: &str, req: UpdateConversationRequest,
+        &self,
+        conversation_id: &str,
+        req: UpdateConversationRequest,
     ) -> Result<Conversation> {
         let mut set_clauses = Vec::new();
 
@@ -521,7 +525,8 @@ impl ConversationStore {
 
     /// 根据ID获取对话
     pub async fn get_conversation_by_id(
-        &self, conversation_id: &str,
+        &self,
+        conversation_id: &str,
     ) -> Result<Option<Conversation>> {
         let conversation = sqlx::query_as::<_, Conversation>(
             r#"
@@ -691,7 +696,9 @@ impl ConversationStore {
 
     /// 智能关闭对话（简化版本）
     pub async fn smart_close_conversation_if_needed(
-        &self, conversation_id: &str, user_message: &str,
+        &self,
+        conversation_id: &str,
+        user_message: &str,
     ) -> Result<bool> {
         if !Self::detect_conversation_end_indicators(user_message) {
             return Ok(false);
@@ -769,7 +776,10 @@ impl ConversationStore {
 
     /// 获取所有对话（管理员功能）
     pub async fn get_all_conversations(
-        &self, limit: Option<i64>, offset: Option<i64>, search: Option<&str>,
+        &self,
+        limit: Option<i64>,
+        offset: Option<i64>,
+        search: Option<&str>,
     ) -> Result<Vec<Conversation>> {
         let limit = limit.unwrap_or(20);
         let offset = offset.unwrap_or(0);

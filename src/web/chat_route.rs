@@ -1,14 +1,26 @@
 use std::sync::Arc;
 
-use axum::{Router, extract::{Json, Path, State}, response::sse::{Event, Sse}, routing::{get, post}};
+use axum::{
+    Router,
+    extract::{Json, Path, State},
+    response::sse::{Event, Sse},
+    routing::{get, post},
+};
 use futures::StreamExt;
 use parking_lot::RwLock;
-use rig::{completion::Message, message::{AssistantContent, UserContent}};
+use rig::{
+    completion::Message,
+    message::{AssistantContent, UserContent},
+};
 use serde::{Deserialize, Serialize};
-use tokio_stream::wrappers::UnboundedReceiverStream;
+use tokio_stream::wrappers::ReceiverStream;
 use tracing::{error, info};
 
-use crate::{agent::RigAgent, db::{ConversationStore, CreateMessageRequest, DocumentStore, MessageRole}, web::chat_store};
+use crate::{
+    agent::RigAgent,
+    db::{ConversationStore, CreateMessageRequest, DocumentStore, MessageRole},
+    web::chat_store,
+};
 
 pub type ChatAppState = (Arc<RigAgent>, Arc<DocumentStore>, Arc<ConversationStore>);
 
@@ -74,7 +86,8 @@ fn is_meaningless_message(message: &str) -> bool {
 }
 
 pub async fn handle_chat(
-    State((agent, _, conversation_store)): State<ChatAppState>, Json(payload): Json<ChatRequest>,
+    State((agent, _, conversation_store)): State<ChatAppState>,
+    Json(payload): Json<ChatRequest>,
 ) -> Json<ChatResponse> {
     // 从请求中获取用户 ID 或生成一个新的
     let user_id = payload.user_id.unwrap_or_else(generate_user_id);
@@ -122,7 +135,7 @@ pub async fn handle_chat(
                     Err(e) => {
                         error!("Failed to get or create conversation for DB storage: {}", e);
                         return Json(ChatResponse { response, user_id });
-                    },
+                    }
                 };
 
                 // 保存用户消息到数据库
@@ -159,11 +172,11 @@ pub async fn handle_chat(
 
             info!("Chat response for user {}: {}", user_id, response);
             response
-        },
+        }
         Err(e) => {
             error!("Error generating chat response: {}", e);
             format!("Sorry, I encountered an error: {}", e)
-        },
+        }
     };
 
     Json(ChatResponse { response, user_id })
@@ -171,7 +184,8 @@ pub async fn handle_chat(
 
 /// 流式聊天处理器
 pub async fn handle_stream_chat(
-    State((agent, _, conversation_store)): State<ChatAppState>, Json(payload): Json<ChatRequest>,
+    State((agent, _, conversation_store)): State<ChatAppState>,
+    Json(payload): Json<ChatRequest>,
 ) -> Sse<impl futures::Stream<Item = Result<Event, axum::Error>>> {
     // 从请求中获取用户 ID 或生成一个新的
     let no_id = payload.user_id.is_none();
@@ -205,7 +219,7 @@ pub async fn handle_stream_chat(
     let history_snapshot = { chat_history.read().clone() };
 
     // 创建流式响应
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let (tx, rx) = tokio::sync::mpsc::channel(128);
 
     // 在后台任务中处理流
     let user_id_clone = user_id.clone();
@@ -220,20 +234,22 @@ pub async fn handle_stream_chat(
             .await
         {
             Ok(mut stream) => {
-                let mut full_response = String::new();
+                let mut full_response = String::with_capacity(2048);
 
                 if no_id {
-                    let _ = tx.send(Ok(Event::default().event("user_id").data(user_id)));
+                    let _ = tx
+                        .send(Ok(Event::default().event("user_id").data(user_id)))
+                        .await;
                 }
 
                 while let Some(chunk) = stream.next().await {
                     full_response.push_str(&chunk);
                     let chunk = chunk.replace("\n", "[LF]");
-                    let _ = tx.send(Ok(Event::default().data(chunk)));
+                    let _ = tx.send(Ok(Event::default().data(chunk))).await;
                 }
 
                 // 发送完成信号
-                let _ = tx.send(Ok(Event::default().data("[DONE]")));
+                let _ = tx.send(Ok(Event::default().data("[DONE]"))).await;
 
                 // 保存到数据库
                 if !is_meaningless_message(&message_clone) {
@@ -295,19 +311,22 @@ pub async fn handle_stream_chat(
                         }
                     }
                 }
-            },
+            }
             Err(e) => {
                 error!("Error creating stream chat: {}", e);
-                let _ = tx.send(Ok(Event::default().data(format!("Error: {}", e))));
-            },
+                let _ = tx
+                    .send(Ok(Event::default().data(format!("Error: {}", e))))
+                    .await;
+            }
         }
     });
 
-    Sse::new(UnboundedReceiverStream::new(rx)).keep_alive(axum::response::sse::KeepAlive::default())
+    Sse::new(ReceiverStream::new(rx)).keep_alive(axum::response::sse::KeepAlive::default())
 }
 
 pub async fn get_chat_history(
-    State((_, _, _)): State<ChatAppState>, Path(user_id): Path<String>,
+    State((_, _, _)): State<ChatAppState>,
+    Path(user_id): Path<String>,
 ) -> Json<Vec<ChatHistoryItem>> {
     // 获取或初始化
     let history = chat_store().get(&user_id);

@@ -114,10 +114,12 @@ impl RigAgent {
                     Ok(MultiTurnStreamItem::StreamItem(StreamedAssistantContent::Reasoning(
                         Reasoning { reasoning, .. },
                     ))) => {
-                        yield reasoning.join("\n");
+                        // yield reasoning.join("\n");
+                        tracing::debug!("Reasoning: {:?}", reasoning);
+                        yield "Reasoning... Please wait...".to_string();
                     },
-                    Ok(MultiTurnStreamItem::FinalResponse(_res)) => {
-                        // println!("Final response: {:?}", res);
+                    Ok(MultiTurnStreamItem::FinalResponse(res)) => {
+                        tracing::debug!("{:?}", res);
                     },
                     Err(e) => {
                         yield format!("Error: {}", e);

@@ -1,12 +1,19 @@
 use std::{net::SocketAddr, sync::Arc};
 
-use rig_rag::{agent::RigAgent, config::AppConfig, db::{ConversationStore, DocumentStore, UserStore}, web};
+use rig_rag::{
+    agent::RigAgent,
+    config::AppConfig,
+    db::{ConversationStore, DocumentStore, UserStore},
+    web,
+};
 use tracing::info;
-use tracing_subscriber::fmt::time::OffsetTime;
+use tracing_subscriber::{EnvFilter, fmt::time::OffsetTime};
 
 #[tokio::main]
 async fn main() {
     dotenv::dotenv().ok();
+
+    let filter = EnvFilter::from_default_env();
     let timer = OffsetTime::new(
         time::UtcOffset::from_hms(8, 0, 0).unwrap(),
         time::format_description::well_known::Iso8601::DATE_TIME,
@@ -15,7 +22,8 @@ async fn main() {
         .with_timer(timer)
         .with_file(true)
         .with_line_number(true)
-        .with_target(false)
+        .with_target(true)
+        .with_env_filter(filter)
         .init();
     info!("Starting Agent");
 

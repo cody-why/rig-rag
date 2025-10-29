@@ -1186,6 +1186,9 @@ let conversationCurrentPage = 0;
 let conversationPageSize = 20;
 let conversationTotal = 0;
 let conversationSearchQuery = '';
+// 消息分页状态
+let messageCurrentPage = 0;
+let messagePageSize = 50;
 
 // 加载对话记录
 async function loadConversations() {
@@ -1409,8 +1412,15 @@ async function viewConversationDetails(conversationId) {
 
 // 查看对话消息
 async function viewConversationMessages(conversationId) {
+    messageCurrentPage = 0;
+    await loadConversationMessages(conversationId, 0);
+}
+
+// 加载消息的分页函数
+async function loadConversationMessages(conversationId, page) {
     try {
-        const response = await fetch(`/api/conversation/${conversationId}/messages`, {
+        const offset = page * messagePageSize;
+        const response = await fetch(`/api/conversation/${conversationId}/messages?limit=${messagePageSize}&offset=${offset}`, {
             headers: getAuthHeaders()
         });
         
@@ -1419,46 +1429,68 @@ async function viewConversationMessages(conversationId) {
         }
         
         const messages = await response.json();
+        messageCurrentPage = page;
+        const hasMore = messages.length === messagePageSize;
         
-        // 创建模态框显示消息
-        const modal = document.createElement('div');
-        modal.style.cssText = `
-            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-            background: rgba(0,0,0,0.5); z-index: 1000; display: flex;
-            align-items: center; justify-content: center;
-        `;
+        let modal = document.getElementById('conversationMessagesModal');
+        if (!modal) {
+            modal = document.createElement('div');
+            modal.id = 'conversationMessagesModal';
+            modal.style.cssText = `
+                position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+                background: rgba(0,0,0,0.5); z-index: 1000; display: flex;
+                align-items: center; justify-content: center;
+            `;
+            document.body.appendChild(modal);
+            modal.addEventListener('click', (e) => {
+                if (e.target === modal) modal.remove();
+            });
+        }
         
-        const messagesHtml = messages.map(msg => `
+        const messagesHtml = messages.length > 0 ? messages.map(msg => `
             <div style="margin-bottom: 15px; padding: 10px; border-radius: 5px; background: ${msg.role === 'user' ? '#e3f2fd' : '#f5f5f5'};">
                 <div style="font-weight: bold; margin-bottom: 5px; color: ${msg.role === 'user' ? '#1976d2' : '#666'};">
                     ${msg.role === 'user' ? '👤 用户' : '🤖 助手'} - ${formatDateTime(msg.created_at)}
                 </div>
-                <div style="white-space: pre-wrap;">${msg.content}</div>
-                ${msg.metadata ? `<div style="font-size: 0.8rem; color: #666; margin-top: 5px;">元数据: ${JSON.stringify(msg.metadata)}</div>` : ''}
+                <div style="white-space: pre-wrap;">${escapeHtml(msg.content)}</div>
+                ${msg.metadata ? `<div style="font-size: 0.8rem; color: #666; margin-top: 5px;">元数据: ${escapeHtml(JSON.stringify(msg.metadata))}</div>` : ''}
             </div>
-        `).join('');
+        `).join('') : '<p style="text-align: center; color: #666;">暂无消息</p>';
+        
+        const paginationHtml = messages.length > 0 ? `
+            <div style="display: flex; justify-content: center; align-items: center; gap: 10px; margin-top: 15px;">
+                <button class="btn btn-secondary" id="messagePrevPage" style="padding: 8px 16px; font-size: 0.9rem;${page === 0 ? 'visibility: hidden;' : ''}">⬅️ 上一页</button>
+                <span style="color: #6c757d; font-size: 1.0rem;">第 ${page + 1} 页</span>
+                <button class="btn btn-secondary" id="messageNextPage"  style="padding: 8px 16px; font-size: 0.9rem; ${!hasMore ? 'visibility: hidden;' : ''}">下一页 ➡️</button>
+            </div>
+        ` : '';
         
         modal.innerHTML = `
-            <div style="background: white; padding: 20px; border-radius: 10px; max-width: 800px; width: 90%; max-height: 80%; overflow-y: auto;">
-                <h3>对话消息历史 (${messages.length} 条)</h3>
-                <div style="max-height: 400px; overflow-y: auto; border: 1px solid #ddd; padding: 15px; border-radius: 5px;">
-                    ${messages.length > 0 ? messagesHtml : '<p style="text-align: center; color: #666;">暂无消息</p>'}
+            <div style="background: white; padding: 20px; border-radius: 10px; max-width: 900px; width: 90%; max-height: 85%; overflow-y: auto; position: relative;">
+                <button style="position: absolute; top: 10px; right: 10px; background: rgba(0,0,0,0.7); color: white; border: none; border-radius: 50%; width: 32px; height: 32px; cursor: pointer; z-index: 1001;" onclick="document.getElementById('conversationMessagesModal').remove()">❌</button>
+                <h3 style="margin-bottom: 15px;">💬 对话消息历史</h3>
+                <div style="max-height: 500px; overflow-y: auto; border: 1px solid #ddd; padding: 15px; border-radius: 5px; background: #fafafa;">
+                    ${messagesHtml}
                 </div>
-                <div style="text-align: right; margin-top: 15px;">
-                    <button class="btn btn-secondary" onclick="this.closest('.modal').remove()">关闭</button>
-                </div>
+                ${paginationHtml}
+                
             </div>
         `;
         
-        modal.className = 'modal';
-        document.body.appendChild(modal);
+        const prevBtn = modal.querySelector('#messagePrevPage');
+        const nextBtn = modal.querySelector('#messageNextPage');
         
-        // 点击背景关闭模态框
-        modal.addEventListener('click', (e) => {
-            if (e.target === modal) {
-                modal.remove();
-            }
-        });
+        if (prevBtn) {
+            prevBtn.onclick = () => {
+                if (messageCurrentPage > 0) loadConversationMessages(conversationId, messageCurrentPage - 1);
+            };
+        }
+        
+        if (nextBtn) {
+            nextBtn.onclick = () => {
+                if (hasMore) loadConversationMessages(conversationId, messageCurrentPage + 1);
+            };
+        }
         
     } catch (error) {
         console.error('Error viewing conversation messages:', error);
