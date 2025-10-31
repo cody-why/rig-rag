@@ -1,4 +1,4 @@
-ca.PHONY: build-f,release
+ca.PHONY: build-f,release,release-win
 
 target_dir=$(shell cargo metadata --format-version=1 | jq -r '.target_directory')
 name=rig-rag

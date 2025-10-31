@@ -1,7 +1,10 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use sqlx::{Row, SqlitePool, sqlite::SqliteRow};
+use std::str::FromStr;
+use std::time::Duration;
 use tracing::{debug, info};
 
 /// 对话会话状态
@@ -177,7 +180,22 @@ impl ConversationStore {
 
     /// 创建新的对话存储实例
     pub async fn new(database_url: &str) -> Result<Self> {
-        let pool = SqlitePool::connect(database_url)
+        // 使用优化的连接与连接池设置
+        let connect_options = SqliteConnectOptions::from_str(database_url)
+            .context("Invalid SQLite database URL")?
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .synchronous(SqliteSynchronous::Normal)
+            .foreign_keys(true)
+            .busy_timeout(Duration::from_millis(5_000));
+
+        let pool = SqlitePoolOptions::new()
+            .max_connections(32)
+            .min_connections(4)
+            .acquire_timeout(Duration::from_secs(5))
+            .idle_timeout(Duration::from_secs(300))
+            .max_lifetime(Duration::from_secs(3_600))
+            .connect_with(connect_options)
             .await
             .context("Failed to connect to conversation database")?;
 
@@ -243,6 +261,19 @@ impl ConversationStore {
 
             info!("Conversation database tables created successfully");
         }
+
+        // 始终确保关键复合索引存在（即使是旧库也可补齐）
+        sqlx::query(
+            r#"
+            CREATE INDEX IF NOT EXISTS idx_messages_conv_created_at
+                ON conversation_messages(conversation_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_conversations_user_updated_at
+                ON conversations(user_id, updated_at DESC, created_at DESC);
+            "#,
+        )
+        .execute(&self.pool)
+        .await
+        .context("Failed to ensure composite indexes")?;
 
         Ok(())
     }

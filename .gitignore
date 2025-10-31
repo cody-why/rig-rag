@@ -6,4 +6,4 @@ logs
 .DS_Store
 node_modules
 data/backups
-data/*.db
+data/*.db*
