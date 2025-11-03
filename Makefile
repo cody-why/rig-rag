@@ -15,4 +15,4 @@ release:
 release-win:
 	cargo build --release --target x86_64-pc-windows-gnu
 	mkdir -p ~/Downloads/release/
-	cp $(target_dir)/x86_64-pc-windows-gnu/release/$(name) $(target_dir)
+	cp $(target_dir)/x86_64-pc-windows-gnu/release/$(name).exe $(target_dir)

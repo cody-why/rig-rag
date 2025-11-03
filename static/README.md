@@ -1,6 +1,6 @@
 # Rig Chat UI
 
-Rig Chat 是一个使用 Tailwind CSS 构建的前端聊天 UI 组件，提供了完整的聊天界面和可嵌入式组件。
+Rig Chat 是一个前端聊天 UI 组件，提供了完整的聊天界面和可嵌入式组件。
 
 ## 文件结构
 ```
