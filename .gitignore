@@ -7,3 +7,4 @@ logs
 node_modules
 data/backups
 data/*.db*
+logs

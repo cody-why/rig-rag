@@ -1,9 +1,30 @@
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::OnceLock,
+};
 
 use anyhow::{Context, Result};
 use chrono::Utc;
 use tokio::fs;
 use tracing::{error, info, warn};
+
+/// 全局 FileBackup 实例
+static FILE_BACKUP: OnceLock<FileBackup> = OnceLock::new();
+
+/// 初始化全局 FileBackup
+pub async fn init_file_backup(backup_dir: &str) -> anyhow::Result<()> {
+    let backup = FileBackup::new(backup_dir);
+    backup.init().await?;
+    FILE_BACKUP
+        .set(backup)
+        .map_err(|_| anyhow::anyhow!("FileBackup already initialized"))?;
+    Ok(())
+}
+
+/// 获取全局 FileBackup 实例
+pub fn get_file_backup() -> Option<&'static FileBackup> {
+    FILE_BACKUP.get()
+}
 
 /// 文件备份管理器
 /// 负责保存、删除和恢复文档的原始文件副本
@@ -56,7 +77,10 @@ impl FileBackup {
     /// # Returns
     /// 返回保存的文件路径
     pub async fn save_backup(
-        &self, doc_id: &str, filename: &str, content: &str,
+        &self,
+        doc_id: &str,
+        filename: &str,
+        content: &str,
     ) -> Result<PathBuf> {
         // 安全检查 1: 验证 doc_id（只允许字母、数字、下划线、连字符）
         if !Self::is_safe_identifier(doc_id) {
@@ -162,10 +186,10 @@ impl FileBackup {
                         Ok(_) => {
                             info!("🗑️  Deleted backup: {:?}", path);
                             deleted_count += 1;
-                        },
+                        }
                         Err(e) => {
                             error!("Failed to delete backup {:?}: {}", path, e);
-                        },
+                        }
                     }
                 }
             }
@@ -342,10 +366,10 @@ impl FileBackup {
                     Ok(_) => {
                         info!("🧹 Cleaned up old backup: {:?}", path);
                         deleted_count += 1;
-                    },
+                    }
                     Err(e) => {
                         error!("Failed to delete old backup {:?}: {}", path, e);
-                    },
+                    }
                 }
             }
 
