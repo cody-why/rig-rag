@@ -12,9 +12,8 @@ async-stream = "0.3"
 # rig-core = { version = "0.23", features = ["derive", "rayon", "reqwest-rustls"], default-features = false }
 rig-core = { version = "0.23", path = "../../github/rig/rig-core", features = ["derive", "rayon", "reqwest-rustls"], default-features = false }
 
-rig-lancedb = { version = "0.2", path = "../../github/rig/rig-lancedb", features = ["rig-rustls"], default-features = false }
-lancedb = { version = "0.22"}
-arrow-array = "56"
+rig-qdrant = { version = "0.1", path = "../../github/rig/rig-qdrant" }
+qdrant-client = "1.15"
 
 chrono = { version = "0.4", features = ["serde"] }
 dotenv = "0.15"

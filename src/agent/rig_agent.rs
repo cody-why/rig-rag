@@ -1,5 +1,10 @@
 use std::sync::atomic::{AtomicPtr, Ordering};
 
+use super::RigAgentBuilder;
+use crate::{
+    config::{AppConfig, QdrantConfig},
+    db::{DocumentStore, SerializableQdrantVectorStore},
+};
 use async_stream::stream;
 use futures::StreamExt;
 use parking_lot::RwLock;
@@ -11,10 +16,6 @@ use rig::{
     providers::openai::{self},
     streaming::{StreamedAssistantContent, StreamingChat},
 };
-use rig_lancedb::{LanceDbVectorIndex, SearchParams};
-
-use super::RigAgentBuilder;
-use crate::config::{AppConfig, LanceDbConfig};
 
 pub struct RigAgent {
     pub agent: AtomicPtr<Agent<openai::CompletionModel>>,
@@ -28,7 +29,7 @@ pub struct RigAgentContext {
     pub client: openai::Client,
     pub embedding_model: openai::EmbeddingModel,
     pub needs_rebuild: bool,
-    pub lancedb_config: LanceDbConfig,
+    pub qdrant_config: QdrantConfig,
     pub preamble_file: String,
     pub preamble: String,
 }
@@ -160,15 +161,15 @@ impl RigAgent {
     /// 从当前context构建agent，避免跨越await持有锁
     async fn build_agent(&self) -> anyhow::Result<Agent<openai::CompletionModel>> {
         // 提取构建agent所需的最小数据
-        let (embedding_model, lancedb_config) = {
+        let (embedding_model, qdrant_config) = {
             let context = self.context.read();
             (
                 context.embedding_model.clone(),
-                context.lancedb_config.clone(),
+                context.qdrant_config.clone(),
             )
         };
 
-        let index = create_vector_index(&lancedb_config, &embedding_model).await?;
+        let index = create_vector_index(&qdrant_config, &embedding_model).await?;
         let context = self.context.read();
         let agent = context.build_with_vector_index(index.0, index.1);
         Ok(agent)
@@ -204,7 +205,7 @@ impl RigAgentContext {
     /// 构建带有向量索引的RAG agent
     pub fn build_with_vector_index(
         &self,
-        vector_index: LanceDbVectorIndex<openai::EmbeddingModel>,
+        vector_index: SerializableQdrantVectorStore<openai::EmbeddingModel>,
         top_k: usize,
     ) -> Agent<openai::CompletionModel> {
         let top_k = top_k.max(1);
@@ -221,34 +222,23 @@ impl RigAgentContext {
 
     /// 构建带有向量索引的RAG agent
     pub async fn build(&self) -> anyhow::Result<Agent<openai::CompletionModel>> {
-        let index = create_vector_index(&self.lancedb_config, &self.embedding_model).await?;
+        let index = create_vector_index(&self.qdrant_config, &self.embedding_model).await?;
         Ok(self.build_with_vector_index(index.0, index.1))
     }
 
     pub async fn create_vector_index(
         &self,
-    ) -> anyhow::Result<(LanceDbVectorIndex<openai::EmbeddingModel>, usize)> {
-        create_vector_index(&self.lancedb_config, &self.embedding_model).await
+    ) -> anyhow::Result<(SerializableQdrantVectorStore<openai::EmbeddingModel>, usize)> {
+        create_vector_index(&self.qdrant_config, &self.embedding_model).await
     }
 }
 
 pub async fn create_vector_index(
-    lancedb_config: &LanceDbConfig,
+    qdrant_config: &QdrantConfig,
     embedding_model: &openai::EmbeddingModel,
-) -> anyhow::Result<(LanceDbVectorIndex<openai::EmbeddingModel>, usize)> {
-    let db = lancedb::connect(&lancedb_config.path).execute().await?;
-    let names = db.table_names().execute().await?;
-    if !names.contains(&lancedb_config.table_name) {
-        anyhow::bail!("LanceDB table '{}' not found", lancedb_config.table_name);
-    }
-    let table = db.open_table(&lancedb_config.table_name).execute().await?;
-
-    let top_k = table.count_rows(None).await.unwrap_or(0) as usize;
-    let search_params = SearchParams::default();
-    let index =
-        LanceDbVectorIndex::new(table, embedding_model.clone(), "id", search_params).await?;
-
-    Ok((index, top_k))
+) -> anyhow::Result<(SerializableQdrantVectorStore<openai::EmbeddingModel>, usize)> {
+    let store: DocumentStore = DocumentStore::with_config(qdrant_config);
+    store.create_vector_index(embedding_model.clone()).await
 }
 
 /// 加载preamble - 从文件加载

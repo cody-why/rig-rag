@@ -50,7 +50,7 @@ impl RigAgentBuilder {
             embedding_model,
             temperature: self.config.temperature,
             openai_model: self.config.openai_model.clone(),
-            lancedb_config: self.config.lancedb.clone(),
+            qdrant_config: self.config.qdrant.clone(),
             preamble_file: self.config.preamble_file.clone(),
             needs_rebuild: false,
             preamble: load_preamble(&self.config.preamble_file),

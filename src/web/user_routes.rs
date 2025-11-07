@@ -1,11 +1,19 @@
 use std::sync::Arc;
 
-use axum::{Json, Router, extract::{Extension, Path, State}, middleware, routing::get};
+use axum::{
+    Json, Router,
+    extract::{Extension, Path, State},
+    middleware,
+    routing::get,
+};
 use serde::Serialize;
 use tracing::info;
 
 use super::auth_routes::{AppError, Claims, require_user_auth_middleware};
-use crate::{db::{CreateUserRequest, UpdateUserRequest, User, UserStore}, web::require_admin_auth_middleware};
+use crate::{
+    db::{CreateUserRequest, UpdateUserRequest, User, UserStore},
+    web::require_admin_auth_middleware,
+};
 
 /// 用户响应
 #[derive(Debug, Serialize)]
@@ -42,7 +50,8 @@ async fn list_users_handler(
 
 /// 获取当前用户信息
 async fn get_current_user_handler(
-    Extension(claims): Extension<Claims>, State(user_store): State<Arc<UserStore>>,
+    Extension(claims): Extension<Claims>,
+    State(user_store): State<Arc<UserStore>>,
 ) -> Result<Json<UserResponse>, AppError> {
     let user = user_store
         .get_user_by_id(claims.user_id)
@@ -54,7 +63,8 @@ async fn get_current_user_handler(
 
 /// 获取指定用户信息
 async fn get_user_handler(
-    Path(id): Path<i64>, State(user_store): State<Arc<UserStore>>,
+    Path(id): Path<i64>,
+    State(user_store): State<Arc<UserStore>>,
 ) -> Result<Json<UserResponse>, AppError> {
     let user = user_store
         .get_user_by_id(id)
@@ -66,7 +76,8 @@ async fn get_user_handler(
 
 /// 创建用户
 async fn create_user_handler(
-    State(user_store): State<Arc<UserStore>>, Json(req): Json<CreateUserRequest>,
+    State(user_store): State<Arc<UserStore>>,
+    Json(req): Json<CreateUserRequest>,
 ) -> Result<Json<UserResponse>, AppError> {
     info!("Creating new user: {}", req.username);
     let user = user_store.create_user(req).await?;
@@ -75,7 +86,8 @@ async fn create_user_handler(
 
 /// 更新用户
 async fn update_user_handler(
-    Path(id): Path<i64>, State(user_store): State<Arc<UserStore>>,
+    Path(id): Path<i64>,
+    State(user_store): State<Arc<UserStore>>,
     Json(req): Json<UpdateUserRequest>,
 ) -> Result<Json<UserResponse>, AppError> {
     info!("Updating user with id: {}", id);
@@ -85,7 +97,8 @@ async fn update_user_handler(
 
 /// 删除用户
 async fn delete_user_handler(
-    Path(id): Path<i64>, State(user_store): State<Arc<UserStore>>,
+    Path(id): Path<i64>,
+    State(user_store): State<Arc<UserStore>>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     info!("Deleting user with id: {}", id);
     user_store.delete_user(id).await?;

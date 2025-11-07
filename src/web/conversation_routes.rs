@@ -1,10 +1,21 @@
 use std::sync::Arc;
 
-use axum::{Router, extract::{Json, Path, Query, State}, response::Json as ResponseJson, routing::{get, post}};
+use axum::{
+    Router,
+    extract::{Json, Path, Query, State},
+    response::Json as ResponseJson,
+    routing::{get, post},
+};
 use serde::{Deserialize, Serialize};
 use tracing::{error, info};
 
-use crate::{agent::RigAgent, db::{Conversation, ConversationMessage, ConversationStats, ConversationStatus, ConversationStore, CreateMessageRequest, DocumentStore, UserInteractionStats}};
+use crate::{
+    agent::RigAgent,
+    db::{
+        Conversation, ConversationMessage, ConversationStats, ConversationStatus,
+        ConversationStore, CreateMessageRequest, DocumentStore, UserInteractionStats,
+    },
+};
 
 type AppState = (Arc<RigAgent>, Arc<DocumentStore>, Arc<ConversationStore>);
 
@@ -92,7 +103,8 @@ pub fn create_conversation_router() -> Router<AppState> {
 
 /// 获取对话详情
 pub async fn get_conversation(
-    State((_, _, conversation_store)): State<AppState>, Path(conversation_id): Path<String>,
+    State((_, _, conversation_store)): State<AppState>,
+    Path(conversation_id): Path<String>,
 ) -> ResponseJson<Option<Conversation>> {
     match conversation_store
         .get_conversation_by_id(&conversation_id)
@@ -102,13 +114,14 @@ pub async fn get_conversation(
         Err(e) => {
             error!("Failed to get conversation: {}", e);
             ResponseJson(None)
-        },
+        }
     }
 }
 
 /// 更新对话
 pub async fn update_conversation(
-    State((_, _, conversation_store)): State<AppState>, Path(conversation_id): Path<String>,
+    State((_, _, conversation_store)): State<AppState>,
+    Path(conversation_id): Path<String>,
     Json(payload): Json<UpdateConversationWebRequest>,
 ) -> ResponseJson<Option<Conversation>> {
     use crate::db::UpdateConversationRequest;
@@ -126,13 +139,14 @@ pub async fn update_conversation(
         Err(e) => {
             error!("Failed to update conversation: {}", e);
             ResponseJson(None)
-        },
+        }
     }
 }
 
 /// 删除对话（硬删除）
 pub async fn delete_conversation(
-    State((_, _, conversation_store)): State<AppState>, Path(conversation_id): Path<String>,
+    State((_, _, conversation_store)): State<AppState>,
+    Path(conversation_id): Path<String>,
 ) -> ResponseJson<serde_json::Value> {
     match conversation_store
         .delete_conversation(&conversation_id)
@@ -144,13 +158,14 @@ pub async fn delete_conversation(
         Err(e) => {
             error!("Failed to delete conversation: {}", e);
             ResponseJson(serde_json::json!({"success": false, "error": e.to_string()}))
-        },
+        }
     }
 }
 
 /// 获取对话消息
 pub async fn get_conversation_messages(
-    State((_, _, conversation_store)): State<AppState>, Path(conversation_id): Path<String>,
+    State((_, _, conversation_store)): State<AppState>,
+    Path(conversation_id): Path<String>,
     Query(pagination): Query<PaginationQuery>,
 ) -> ResponseJson<Vec<ConversationMessage>> {
     match conversation_store
@@ -161,13 +176,14 @@ pub async fn get_conversation_messages(
         Err(e) => {
             error!("Failed to get conversation messages: {}", e);
             ResponseJson(Vec::new())
-        },
+        }
     }
 }
 
 /// 添加消息到对话
 pub async fn add_message_to_conversation(
-    State((_, _, conversation_store)): State<AppState>, Path(conversation_id): Path<String>,
+    State((_, _, conversation_store)): State<AppState>,
+    Path(conversation_id): Path<String>,
     Json(payload): Json<CreateMessageRequest>,
 ) -> ResponseJson<Option<ConversationMessage>> {
     let req = CreateMessageRequest {
@@ -182,13 +198,14 @@ pub async fn add_message_to_conversation(
         Err(e) => {
             error!("Failed to add message to conversation: {}", e);
             ResponseJson(None)
-        },
+        }
     }
 }
 
 /// 获取用户的对话列表
 pub async fn get_user_conversations(
-    State((_, _, conversation_store)): State<AppState>, Path(user_id): Path<String>,
+    State((_, _, conversation_store)): State<AppState>,
+    Path(user_id): Path<String>,
     Query(pagination): Query<PaginationQuery>,
 ) -> ResponseJson<UserConversationsResponse> {
     match conversation_store
@@ -202,7 +219,7 @@ pub async fn get_user_conversations(
                 conversations,
                 has_more,
             })
-        },
+        }
         Err(e) => {
             error!("Failed to get user conversations: {}", e);
             ResponseJson(UserConversationsResponse {
@@ -210,13 +227,14 @@ pub async fn get_user_conversations(
                 conversations: Vec::new(),
                 has_more: false,
             })
-        },
+        }
     }
 }
 
 /// 获取用户交互统计
 pub async fn get_user_interaction_stats(
-    State((_, _, conversation_store)): State<AppState>, Path(user_id): Path<String>,
+    State((_, _, conversation_store)): State<AppState>,
+    Path(user_id): Path<String>,
 ) -> ResponseJson<Option<UserInteractionStats>> {
     match conversation_store
         .get_user_interaction_stats(&user_id)
@@ -226,7 +244,7 @@ pub async fn get_user_interaction_stats(
         Err(e) => {
             error!("Failed to get user interaction stats: {}", e);
             ResponseJson(None)
-        },
+        }
     }
 }
 
@@ -256,7 +274,7 @@ pub async fn get_all_conversations(
                 conversations,
                 has_more,
             })
-        },
+        }
         Err(e) => {
             error!("Failed to get all conversations: {}", e);
             ResponseJson(UserConversationsResponse {
@@ -264,7 +282,7 @@ pub async fn get_all_conversations(
                 conversations: Vec::new(),
                 has_more: false,
             })
-        },
+        }
     }
 }
 
@@ -277,13 +295,14 @@ pub async fn get_conversation_stats(
         Err(e) => {
             error!("Failed to get conversation stats: {}", e);
             ResponseJson(None)
-        },
+        }
     }
 }
 
 /// 清理旧对话记录
 pub async fn cleanup_old_conversations(
-    State((_, _, conversation_store)): State<AppState>, Json(payload): Json<CleanupRequest>,
+    State((_, _, conversation_store)): State<AppState>,
+    Json(payload): Json<CleanupRequest>,
 ) -> ResponseJson<serde_json::Value> {
     if payload.days_to_keep < 1 {
         return ResponseJson(serde_json::json!({
@@ -303,13 +322,13 @@ pub async fn cleanup_old_conversations(
                 "deleted_count": deleted_count,
                 "message": format!("成功清理了 {} 条旧对话记录", deleted_count)
             }))
-        },
+        }
         Err(e) => {
             error!("Failed to cleanup old conversations: {}", e);
             ResponseJson(serde_json::json!({
                 "success": false,
                 "error": e.to_string()
             }))
-        },
+        }
     }
 }

@@ -40,7 +40,7 @@ async fn main() {
     let agent = RigAgent::new_from_config(&config).await.unwrap();
 
     // 为路由查询初始化 DocumentStore（供管理/查询接口使用）
-    let document_store = Arc::new(DocumentStore::with_config(&config.lancedb));
+    let document_store = Arc::new(DocumentStore::with_config(&config.qdrant));
 
     let agent = Arc::new(agent);
 

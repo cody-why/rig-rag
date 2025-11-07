@@ -145,7 +145,7 @@ impl DocumentParser {
                         // 段落开始（非表格内）
                         current_paragraph.clear();
                     }
-                },
+                }
                 Ok(Event::End(ref e)) => {
                     let name = e.local_name();
                     let name_bytes = name.as_ref();
@@ -183,7 +183,7 @@ impl DocumentParser {
                             current_paragraph.clear();
                         }
                     }
-                },
+                }
                 Ok(Event::Text(e)) => {
                     // 跳过域代码中的文本
                     if in_field {
@@ -198,10 +198,10 @@ impl DocumentParser {
                     } else if !in_table {
                         current_paragraph.push_str(&text);
                     }
-                },
+                }
                 Ok(Event::Eof) => break,
                 Err(e) => return Err(anyhow!("XML解析错误: {:?}", e)),
-                _ => {},
+                _ => {}
             }
             buf.clear();
         }
@@ -411,7 +411,7 @@ impl DocumentParser {
                 } else {
                     format!("{:.2}", f)
                 }
-            },
+            }
             Data::Int(i) => i.to_string(),
             Data::Bool(b) => if *b { "✓" } else { "✗" }.to_string(),
             Data::Error(e) => format!("ERROR: {:?}", e),
@@ -433,7 +433,7 @@ impl DocumentParser {
                     let formatted = Self::format_text_to_markdown(&text);
                     Ok(formatted)
                 }
-            },
+            }
             Err(e) => Err(anyhow!("Failed to parse PDF: {}", e)),
         }
     }

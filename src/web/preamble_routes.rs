@@ -1,6 +1,12 @@
 use std::sync::Arc;
 
-use axum::{Router, extract::{Json, State}, http::StatusCode, response::Json as ResponseJson, routing::{get, put}};
+use axum::{
+    Router,
+    extract::{Json, State},
+    http::StatusCode,
+    response::Json as ResponseJson,
+    routing::{get, put},
+};
 use serde::{Deserialize, Serialize};
 use tokio::fs;
 use tracing::{error, info};
@@ -35,7 +41,7 @@ pub fn create_preamble_mutation_router() -> Router<AppState> {
 async fn get_preamble(
     State((agent, _)): State<AppState>,
 ) -> Result<ResponseJson<PreambleResponse>, StatusCode> {
-    // 从 agent context 获取 preamble，因为 LanceDB 主要用于向量存储
+    // 从 agent context 获取 preamble，因为 Qdrant 主要用于向量存储
     let context = agent.context.read();
     Ok(ResponseJson(PreambleResponse {
         content: context.preamble.clone(),
@@ -44,7 +50,8 @@ async fn get_preamble(
 }
 
 async fn update_preamble(
-    State((agent, _)): State<AppState>, Json(req): Json<UpdatePreambleRequest>,
+    State((agent, _)): State<AppState>,
+    Json(req): Json<UpdatePreambleRequest>,
 ) -> Result<ResponseJson<PreambleResponse>, StatusCode> {
     // 验证秘密密钥
     let required_secret =

@@ -1,13 +1,26 @@
 use std::sync::Arc;
 
-use axum::{Router, extract::Path, http::{HeaderValue, Method}, middleware, response::Html, routing::get};
+use axum::{
+    Router,
+    extract::Path,
+    http::{HeaderValue, Method},
+    middleware,
+    response::Html,
+    routing::get,
+};
 use tower_governor::{GovernorLayer, governor::GovernorConfigBuilder};
 use tower_http::cors::CorsLayer;
 
-use crate::{agent::RigAgent, db::{ConversationStore, DocumentStore, UserStore}, web::*};
+use crate::{
+    agent::RigAgent,
+    db::{ConversationStore, DocumentStore, UserStore},
+    web::*,
+};
 
 pub async fn create_router(
-    agent: Arc<RigAgent>, document_store: Arc<DocumentStore>, user_store: Arc<UserStore>,
+    agent: Arc<RigAgent>,
+    document_store: Arc<DocumentStore>,
+    user_store: Arc<UserStore>,
 ) -> Router {
     // 初始化对话存储
     let conversation_store = Arc::new(

@@ -29,18 +29,33 @@ cp env.example .env
 - 生产环境务必更换 `JWT_SECRET`、`PREAMBLE_SECRET_KEY`、`DEFAULT_ADMIN_PASSWORD`。
 - 如使用兼容网关，需同步修改 `OPENAI_BASE_URL` 与 `EMBEDDING_BASE_URL`。
 
-### 3. 启动后端
+
+### 4. 安装数据库
+
+- 使用docker
+```bash
+docker run -p 6333:6333 -p 6334:6334 \
+    -v "$(pwd)/qdrant_storage:/qdrant/storage:z" \
+    qdrant/qdrant
+```
+
+- 使用安装包安装
+```bash
+https://github.com/qdrant/qdrant/releases
+```
+
+### 4. 启动后端
 ```bash
 ./rig-rag 
 ```
 
 服务默认监听：`http://0.0.0.0:3000`
 
-### 4. 管理后台地址
+### 5. 管理后台地址
 - 管理后台：`http://<你的域名或IP>:3000/admin`
 - 首次登录使用 `.env` 的 `DEFAULT_ADMIN_PASSWORD`，登录后请立即修改。
 
-### 5. 构建与提供前端静态资源（可选）
+### 6. 构建与提供前端静态资源（可选）
 仓库已提供 `static/` 目录的打包产物。若需要从 `frontend/js` 重新构建压缩版 JS：
 ```bash
 # 全局安装 terser（或在项目内安装）
@@ -52,7 +67,7 @@ npm run build
 
 部署时只需让后端或你的 Web 服务器能访问 `static/` 目录下的文件。
 
-### 6. 在任意网站集成 Chat 组件（chat JS）
+### 7. 在任意网站集成 Chat 组件（chat JS）
 在目标站点页面中加入：
 ```html
 <script src="/static/js/chatbot.js"></script>
@@ -74,7 +89,7 @@ npm run build
 - 部署 `chatbot.js` 时，确保可通过站点路径 `/static/js/chatbot.js` 访问，或调整 `<script src>` 为你实际的静态路径。
 
 
-### 7. 常见问题
+### 8. 常见问题
 - 无法访问管理后台：确认服务已启动、端口开放、防火墙配置正确。
 - 模型报错或无响应：检查 `OPENAI_API_KEY` 与 `OPENAI_BASE_URL` 是否正确；观察服务日志（`RUST_LOG`）。
 - 向量检索异常：确认 `LANCEDB_PATH` 目录有读写权限，且磁盘空间充足。

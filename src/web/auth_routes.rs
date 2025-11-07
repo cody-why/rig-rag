@@ -1,6 +1,14 @@
 use std::sync::Arc;
 
-use axum::{Json, Router, body::Body, extract::{Request, State}, http::{StatusCode, header}, middleware::Next, response::{IntoResponse, Response}, routing::post};
+use axum::{
+    Json, Router,
+    body::Body,
+    extract::{Request, State},
+    http::{StatusCode, header},
+    middleware::Next,
+    response::{IntoResponse, Response},
+    routing::post,
+};
 use chrono::{Duration, Utc};
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use serde::{Deserialize, Serialize};
@@ -46,7 +54,10 @@ impl JwtUtil {
 
     /// 生成JWT token
     pub fn generate_token(
-        &self, user_id: i64, username: &str, role: UserRole,
+        &self,
+        user_id: i64,
+        username: &str,
+        role: UserRole,
     ) -> anyhow::Result<String> {
         let expiration = Utc::now()
             .checked_add_signed(Duration::days(7))
@@ -83,7 +94,8 @@ impl JwtUtil {
 
 /// 登录处理器
 async fn login_handler(
-    State(user_store): State<Arc<UserStore>>, Json(req): Json<LoginRequest>,
+    State(user_store): State<Arc<UserStore>>,
+    Json(req): Json<LoginRequest>,
 ) -> Result<Json<LoginResponse>, AppError> {
     debug!("Login attempt for user: {}", req.username);
 
@@ -125,7 +137,8 @@ pub fn create_auth_router(user_store: Arc<UserStore>) -> Router {
 
 /// 需要用户登录的中间件
 pub async fn require_user_auth_middleware(
-    mut req: Request, next: Next,
+    mut req: Request,
+    next: Next,
 ) -> Result<Response, AppError> {
     // 提取和验证token
     let token = extract_token(&req)?;
@@ -142,7 +155,8 @@ pub async fn require_user_auth_middleware(
 
 /// JWT认证 + Admin角色检查
 pub async fn require_admin_auth_middleware(
-    mut req: Request, next: Next,
+    mut req: Request,
+    next: Next,
 ) -> Result<Response, AppError> {
     // 1. 提取和验证token
     let token = extract_token(&req)?;
@@ -208,7 +222,7 @@ impl IntoResponse for AppError {
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "Internal server error".to_string(),
                 )
-            },
+            }
         };
 
         let body = serde_json::json!({

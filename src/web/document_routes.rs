@@ -1,11 +1,20 @@
 use std::sync::Arc;
 
-use axum::{Router, extract::{Json, Multipart, Path, Query, State}, http::StatusCode, response::{IntoResponse, Json as ResponseJson, Response}, routing::{delete, get, post, put}};
+use axum::{
+    Router,
+    extract::{Json, Multipart, Path, Query, State},
+    http::StatusCode,
+    response::{IntoResponse, Json as ResponseJson, Response},
+    routing::{delete, get, post, put},
+};
 use serde::{Deserialize, Serialize};
 use tracing::{error, info, warn};
 
 use crate::utils::DocumentParser;
-use crate::{agent::RigAgent, db::{Document, DocumentStore}};
+use crate::{
+    agent::RigAgent,
+    db::{Document, DocumentStore},
+};
 
 // State 类型别名
 pub type AppState = (Arc<RigAgent>, Arc<DocumentStore>);
@@ -87,7 +96,8 @@ pub fn create_document_mutation_router() -> Router<AppState> {
 }
 
 async fn list_documents(
-    State((_, document_store)): State<AppState>, Query(p): Query<PaginationQuery>,
+    State((_, document_store)): State<AppState>,
+    Query(p): Query<PaginationQuery>,
 ) -> Result<ResponseJson<DocumentListResponse>, StatusCode> {
     let limit = p.limit.unwrap_or(20).clamp(1, 1000);
     let offset = p.offset.unwrap_or(0);
@@ -115,16 +125,17 @@ async fn list_documents(
                 limit,
                 offset,
             }))
-        },
+        }
         Err(e) => {
             error!("Failed to list documents: {}", e);
             Err(StatusCode::INTERNAL_SERVER_ERROR)
-        },
+        }
     }
 }
 
 async fn get_document(
-    State((_, document_store)): State<AppState>, Path(id): Path<String>,
+    State((_, document_store)): State<AppState>,
+    Path(id): Path<String>,
 ) -> Result<ResponseJson<DocumentResponse>, StatusCode> {
     match document_store.get_document(&id).await {
         Ok(Some(doc)) => Ok(ResponseJson(DocumentResponse::from(doc))),
@@ -132,12 +143,13 @@ async fn get_document(
         Err(e) => {
             error!("Failed to get document: {}", e);
             Err(StatusCode::INTERNAL_SERVER_ERROR)
-        },
+        }
     }
 }
 
 async fn create_document(
-    State((agent, document_store)): State<AppState>, Json(req): Json<CreateDocumentRequest>,
+    State((agent, document_store)): State<AppState>,
+    Json(req): Json<CreateDocumentRequest>,
 ) -> Response {
     info!("Creating document");
 
@@ -154,7 +166,8 @@ async fn create_document(
 }
 
 async fn update_document(
-    State((agent, document_store)): State<AppState>, Path(id): Path<String>,
+    State((agent, document_store)): State<AppState>,
+    Path(id): Path<String>,
     Json(req): Json<UpdateDocumentRequest>,
 ) -> Result<ResponseJson<DocumentResponse>, StatusCode> {
     info!("Updating document");
@@ -189,10 +202,10 @@ async fn update_document(
                         match backup.save_backup(&doc.id, &doc.source, &doc.content).await {
                             Ok(path) => {
                                 info!("💾 Updated backup to: {:?}", path);
-                            },
+                            }
                             Err(e) => {
                                 warn!("⚠️ Failed to save updated backup: {}", e);
-                            },
+                            }
                         }
                     }
 
@@ -201,39 +214,36 @@ async fn update_document(
                     info!("Marked agent for rebuild due to updated document");
 
                     Ok(ResponseJson(DocumentResponse::from(doc)))
-                },
+                }
                 Err(e) => {
                     error!("Failed to update document: {}", e);
                     Err(StatusCode::INTERNAL_SERVER_ERROR)
-                },
+                }
             }
-        },
+        }
         Ok(None) => Err(StatusCode::NOT_FOUND),
         Err(e) => {
             error!("Failed to get document: {}", e);
             Err(StatusCode::INTERNAL_SERVER_ERROR)
-        },
+        }
     }
 }
 
 async fn delete_document(
-    State((agent, document_store)): State<AppState>, Path(id): Path<String>,
+    State((agent, document_store)): State<AppState>,
+    Path(id): Path<String>,
 ) -> Result<StatusCode, StatusCode> {
     info!("Deleting document: {}", id);
     // 首先检查这个文档是否存在，以及是否是分块文档
     match document_store.get_document(&id).await {
         Ok(Some(doc)) => {
-            // 检查是否是分块文档（通过source字段判断）
-            let is_chunked = doc.source.contains(" (Part ");
+            // 使用结构化字段判断是否为分块文档
+            let is_chunked = doc.chunk_index.is_some() || doc.id != doc.base_id;
 
             let (delete_id, backup_id) = if is_chunked {
-                // 分块文档：提取base_id，删除所有分块
-                let parts: Vec<&str> = id.split('-').collect();
-                let base_id = parts[..parts.len() - 1].join("-");
-                (format!("{}_CHUNKED", base_id), base_id)
+                (format!("{}_CHUNKED", doc.base_id), doc.base_id.clone())
             } else {
-                // 单文档：直接使用原ID（现在单文档不再有-0后缀）
-                (id.clone(), id.clone())
+                (doc.id.clone(), doc.base_id.clone())
             };
 
             // 删除文档
@@ -246,10 +256,10 @@ async fn delete_document(
                         match backup.delete_backup(&backup_id).await {
                             Ok(count) => {
                                 info!("🗑️  Deleted {} backup file(s) for ID: {}", count, backup_id);
-                            },
+                            }
                             Err(e) => {
                                 warn!("⚠️ Failed to delete backup for ID {}: {}", backup_id, e);
-                            },
+                            }
                         }
                     }
 
@@ -258,26 +268,27 @@ async fn delete_document(
                     info!("Marked agent for rebuild due to document deletion");
 
                     Ok(StatusCode::NO_CONTENT)
-                },
+                }
                 Err(e) => {
                     error!("Failed to delete document: {}", e);
                     Err(StatusCode::INTERNAL_SERVER_ERROR)
-                },
+                }
             }
-        },
+        }
         Ok(None) => {
             error!("Document not found: {}", id);
             Err(StatusCode::NOT_FOUND)
-        },
+        }
         Err(e) => {
             error!("Failed to get document: {}", e);
             Err(StatusCode::INTERNAL_SERVER_ERROR)
-        },
+        }
     }
 }
 
 async fn upload_document(
-    State((agent, document_store)): State<AppState>, mut multipart: Multipart,
+    State((agent, document_store)): State<AppState>,
+    mut multipart: Multipart,
 ) -> Response {
     info!("Uploading document");
     let mut filename = String::new();
@@ -299,7 +310,7 @@ async fn upload_document(
                             }),
                         )
                             .into_response();
-                    },
+                    }
                 };
 
                 match name.as_str() {
@@ -315,15 +326,15 @@ async fn upload_document(
                                     }),
                                 )
                                     .into_response();
-                            },
+                            }
                         };
-                    },
+                    }
                     "file" => {
                         file_data = Some(data);
-                    },
-                    _ => {},
+                    }
+                    _ => {}
                 }
-            },
+            }
             Ok(None) => break,
             Err(e) => {
                 error!("Failed to read multipart field: {}", e);
@@ -334,7 +345,7 @@ async fn upload_document(
                     }),
                 )
                     .into_response();
-            },
+            }
         }
     }
 
@@ -374,7 +385,7 @@ async fn upload_document(
                 }),
             )
                 .into_response();
-        },
+        }
     };
 
     info!(
@@ -389,7 +400,7 @@ async fn upload_document(
         Err(status) => {
             error!("Failed to upload document: {}", status.1);
             (status.0, ResponseJson(ErrorResponse { error: status.1 })).into_response()
-        },
+        }
     }
 }
 
@@ -407,11 +418,11 @@ async fn reset_documents(
             info!("Marked agent for rebuild due to document store reset");
 
             Ok(StatusCode::OK)
-        },
+        }
         Err(e) => {
             error!("Failed to reset document store: {}", e);
             Err(StatusCode::INTERNAL_SERVER_ERROR)
-        },
+        }
     }
 }
 
@@ -464,6 +475,12 @@ async fn process_and_save_document(
             let timestamp = chrono::Utc::now();
             Document {
                 id,
+                base_id: base_id.clone(),
+                chunk_index: if total_chunks == 1 {
+                    None
+                } else {
+                    Some(idx as u32)
+                },
                 content: chunk_content,
                 source,
                 created_at: timestamp,
@@ -496,10 +513,10 @@ async fn process_and_save_document(
                 match backup.save_backup(&base_id, filename, content).await {
                     Ok(path) => {
                         info!("💾 Saved backup to: {:?}", path);
-                    },
+                    }
                     Err(e) => {
                         warn!("⚠️ Failed to save backup: {}", e);
-                    },
+                    }
                 }
             }
 
@@ -511,14 +528,14 @@ async fn process_and_save_document(
             );
 
             Ok(ResponseJson(DocumentResponse::from(documents[0].clone())))
-        },
+        }
         Err(e) => {
             error!("Failed to {} document: {}", action.to_lowercase(), e);
             Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "保存文档失败".to_string(),
             ))
-        },
+        }
     }
 }
 

@@ -1,7 +1,7 @@
 use time::formatting::Formattable;
 use tracing_subscriber::fmt::{
-    time::{FormatTime, OffsetTime},
     FormatFields,
+    time::{FormatTime, OffsetTime},
 };
 
 pub struct CustomFormatter<F> {
@@ -20,8 +20,10 @@ where
     F: Formattable,
 {
     fn format_event(
-        &self, ctx: &tracing_subscriber::fmt::FmtContext<'_, S, N>,
-        mut writer: tracing_subscriber::fmt::format::Writer<'_>, event: &tracing::Event<'_>,
+        &self,
+        ctx: &tracing_subscriber::fmt::FmtContext<'_, S, N>,
+        mut writer: tracing_subscriber::fmt::format::Writer<'_>,
+        event: &tracing::Event<'_>,
     ) -> std::fmt::Result {
         // Implement custom formatting logic here
         let metadata = event.metadata();
@@ -33,7 +35,11 @@ where
         write!(writer, " {:<5} ", metadata.level())?;
 
         // Write target (module path)
-        write!(writer, "{} ", metadata.target().split("::").next().unwrap_or(""))?;
+        write!(
+            writer,
+            "{} ",
+            metadata.target().split("::").next().unwrap_or("")
+        )?;
 
         // Write the log message
         ctx.format_fields(writer.by_ref(), event)?;
