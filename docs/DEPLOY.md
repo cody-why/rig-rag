@@ -42,6 +42,8 @@ docker run -p 6333:6333 -p 6334:6334 \
 - 使用安装包安装
 ```bash
 https://github.com/qdrant/qdrant/releases
+
+https://qdrant.tech/documentation/guides/configuration/
 ```
 
 ### 4. 启动后端
@@ -91,8 +93,13 @@ npm run build
 
 ### 8. 常见问题
 - 无法访问管理后台：确认服务已启动、端口开放、防火墙配置正确。
-- 模型报错或无响应：检查 `OPENAI_API_KEY` 与 `OPENAI_BASE_URL` 是否正确；观察服务日志（`RUST_LOG`）。
-- 向量检索异常：确认 `LANCEDB_PATH` 目录有读写权限，且磁盘空间充足。
+- 模型报错或无响应：检查 `OPENAI_API_KEY` 与 `OPENAI_BASE_URL` 是否正确。
+- 向量检索异常：确认 `data` 目录有读写权限，且磁盘空间充足。
 - 跨域问题：若前后端不同域名，请在后端开启相应的 CORS（若有需要）。
+
+
+### 9. 查看 Qdrant 管理界面
+http://localhost:6333/dashboard#/collections/rig_documents
+
 
 

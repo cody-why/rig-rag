@@ -57,15 +57,18 @@ pub async fn create_router(
         .route("/admin", get(serve_admin))
         .route("/static/{*file}", get(static_file));
 
-    // 需要登录即可访问的查询路由（所有用户）
+    // 需要登录即可访问的用户路由（所有用户）
     let user_query_router = Router::new()
         .merge(crate::web::create_document_query_router())
         .merge(crate::web::create_preamble_query_router())
+        .merge(crate::web::create_document_mutation_router())
+        .layer(tower_http::limit::RequestBodyLimitLayer::new(
+            10 * 1024 * 1024,
+        )) // 文档上传限制
         .route_layer(middleware::from_fn(require_user_auth_middleware));
 
     // 需要Admin权限的修改路由
     let admin_mutation_router = Router::new()
-        .merge(crate::web::create_document_mutation_router())
         .merge(crate::web::create_preamble_mutation_router())
         .layer(tower_http::limit::RequestBodyLimitLayer::new(
             10 * 1024 * 1024,

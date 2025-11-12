@@ -346,6 +346,9 @@ impl UserStore {
     /// 删除用户
     pub async fn delete_user(&self, id: i64) -> Result<()> {
         // 不允许删除最后一个admin用户
+        if id == 1001 {
+            return Err(anyhow::anyhow!("Cannot delete the admin user"));
+        }
         let user = self
             .get_user_by_id(id)
             .await?

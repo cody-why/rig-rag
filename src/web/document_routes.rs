@@ -78,14 +78,14 @@ impl From<Document> for DocumentResponse {
     }
 }
 
-/// 创建文档路由 - 查询操作（所有登录用户可访问）
+/// 创建文档路由 - 查询操作
 pub fn create_document_query_router() -> Router<AppState> {
     Router::new()
         .route("/api/documents", get(list_documents))
         .route("/api/documents/{id}", get(get_document))
 }
 
-/// 创建文档路由 - 修改操作（仅管理员可访问）
+/// 创建文档路由 - 修改操作
 pub fn create_document_mutation_router() -> Router<AppState> {
     Router::new()
         .route("/api/documents", post(create_document))
@@ -440,9 +440,9 @@ async fn process_and_save_document(
         return Err((StatusCode::BAD_REQUEST, "文件内容不能为空".to_string()));
     }
 
-    // 将文档内容分块处理，避免超过embedding模型的token限制
-    const CHUNK_SIZE: usize = 12000;
-    let chunks = chunk_document(content, CHUNK_SIZE);
+    // 将文档内容分块处理
+    const MAX_CHUNK_SIZE: usize = 8192;
+    let chunks = chunk_document(content, MAX_CHUNK_SIZE);
     let total_chunks = chunks.len();
 
     // 双重检查：确保chunks不为空
@@ -732,7 +732,11 @@ fn chunk_document(text: &str, chunk_size: usize) -> Vec<String> {
         chunks.push(text.to_string());
     }
 
-    chunks
+    if chunks.len() <= 1 {
+        return chunks;
+    }
+
+    merge_adjacent_chunks(chunks, chunk_size)
 }
 
 /// 检测是否是表格的开始
@@ -755,10 +759,6 @@ fn is_table_start(lines: &[&str], index: usize) -> bool {
         if index + 1 < lines.len() {
             let next_line = lines[index + 1].trim();
             if next_line.contains("|") {
-                info!(
-                    "is_table_start({}): true - current and next both have |",
-                    index
-                );
                 return true;
             }
         }
@@ -903,4 +903,39 @@ fn split_large_table(table_text: &str, chunk_size: usize) -> Vec<String> {
     }
 
     chunks
+}
+
+/// 合并相邻的小块，尽量减少分块数量但不超过限制
+fn merge_adjacent_chunks(mut chunks: Vec<String>, chunk_size: usize) -> Vec<String> {
+    let mut merged: Vec<String> = Vec::with_capacity(chunks.len());
+
+    for chunk in chunks.drain(..) {
+        let trimmed = chunk.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let chunk_str = trimmed.to_string();
+        if let Some(last) = merged.last_mut() {
+            // 若合并后仍然不超过大小限制，则直接拼接
+            let separator = if last.ends_with("\n\n") || chunk_str.starts_with('#') {
+                ""
+            } else if last.ends_with('\n') {
+                "\n"
+            } else {
+                "\n\n"
+            };
+
+            let projected_len = last.len() + separator.len() + chunk_str.len();
+            if projected_len <= chunk_size {
+                last.push_str(separator);
+                last.push_str(&chunk_str);
+                continue;
+            }
+        }
+
+        merged.push(chunk_str);
+    }
+
+    merged
 }

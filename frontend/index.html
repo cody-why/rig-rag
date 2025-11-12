@@ -64,12 +64,12 @@
         <h2>基本嵌入方法</h2>
         <p>将以下代码添加到您的 HTML 页面中：</p>
         <pre>&lt;!-- 1. 引入 RigChat 脚本 --&gt;
-&lt;script src="https://your-server.com/chatbot.js"&gt;&lt;/script&gt;
+&lt;script src="https://your-chat-server.com/static/js/chatbot.js"&gt;&lt;/script&gt;
 
 &lt;!-- 2. 创建聊天组件实例 --&gt;
 &lt;script&gt;
     const chatbot = new RigChat({
-        apiBase: "https://your-api-server.com",  // API 服务器地址
+        apiBase: "https://your-chat-server.com",  // AI Chat 服务器地址
         title: "客服助手",                       // 聊天窗口标题
         welcomeMessage: "您好！我是您的智能助手", // 欢迎消息
         buttonIcon: "ai",                    // 按钮图标
@@ -149,7 +149,7 @@
 
         <p>示例：使用自定义配置创建聊天组件</p>
         <pre>const chatbot = new RigChat({
-    apiBase: "https://api.example.com",
+    apiBase: "https://your-chat-server.com",
     theme: "dark",
     position: "left",
     title: "智能客服",

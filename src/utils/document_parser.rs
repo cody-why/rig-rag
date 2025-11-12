@@ -222,8 +222,8 @@ impl DocumentParser {
             return String::new();
         }
 
-        // 预估容量：每行约 50 字符
-        let estimated_capacity = table.len() * 50 * max_cols;
+        // 预估容量：每行约 150 字符
+        let estimated_capacity = table.len() * 150 * max_cols;
         let mut result = String::with_capacity(estimated_capacity);
 
         // 生成表格行

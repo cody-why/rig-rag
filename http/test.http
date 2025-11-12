@@ -1,0 +1,17 @@
+### 获取集合信息
+GET http://localhost:6333/collections/rig_documents
+
+### 删除集合
+DELETE http://localhost:6333/collections/rig_documents
+
+### 创建集合
+PUT http://localhost:6333/collections
+Content-Type: application/json
+
+{
+    "name": "rig_documents",
+    "vectors_config": {
+        "size": 1024,
+        "distance": "Cosine"
+    }
+}

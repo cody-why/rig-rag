@@ -1,6 +1,6 @@
 use std::{collections::HashMap, marker::PhantomData, sync::Arc};
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use qdrant_client::{
     Payload, Qdrant,
@@ -304,20 +304,26 @@ impl<M: EmbeddingModel + Send + Sync + 'static> DocumentStore<M> {
             .await?;
 
         let vector_store = self.build_vector_store(client, embedding_model.clone());
-        let len = documents.len();
-        info!(count = len, "Adding documents to Qdrant");
+        let total = documents.len();
+        info!(
+            collection = %self.config.collection_name,
+            total = total,
+            "Adding documents to Qdrant"
+        );
+        // documents 分批插入, 每批最多10个文档
+        for chunk in documents.chunks(10) {
+            let embeddings = EmbeddingsBuilder::new(embedding_model.clone())
+                .documents(chunk.to_vec())
+                .context("Failed to create embeddings builder")?
+                .build()
+                .await
+                .context("Failed to create embeddings")?;
 
-        let embeddings = EmbeddingsBuilder::new(embedding_model)
-            .documents(documents)
-            .context("Failed to create embeddings builder")?
-            .build()
-            .await
-            .context("Failed to build embeddings for documents")?;
-
-        vector_store
-            .insert_documents(embeddings)
-            .await
-            .map_err(|err| anyhow!("Failed to insert documents into Qdrant: {err}"))?;
+            vector_store
+                .insert_documents(embeddings)
+                .await
+                .context("Failed to insert documents into Qdrant")?;
+        }
 
         Ok(())
     }

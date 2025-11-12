@@ -13,7 +13,7 @@ use tracing::info;
 async fn main() {
     dotenv::dotenv().ok();
 
-    init_logger().unwrap();
+    init_logger().expect("Failed to initialize logger");
     info!("Starting Agent");
 
     // 初始化文件备份

@@ -9,7 +9,7 @@ let currentDocumentId = null;
 
 // 分页状态
 let currentPage = 0;
-let pageSize = 10;
+let pageSize = 20;
 let totalDocuments = 0;
 
 // 获取认证headers
@@ -805,6 +805,7 @@ async function loadUsers() {
                         <th style="padding: 15px; text-align: left;">角色</th>
                         <th style="padding: 15px; text-align: left;">状态</th>
                         <th style="padding: 15px; text-align: left;">创建时间</th>
+                        <th style="padding: 15px; text-align: left;">更新时间</th>
                         <th style="padding: 15px; text-align: center;">操作</th>
                     </tr>
                 </thead>
@@ -821,6 +822,7 @@ async function loadUsers() {
             row.style.cssText = `background: ${index % 2 === 0 ? 'white' : '#f8f9fa'}; border-bottom: 1px solid #e9ecef;`;
             
             const createdAt = new Date(user.created_at).toLocaleString('zh-CN');
+            const updatedAt = new Date(user.updated_at).toLocaleString('zh-CN');
             const roleText = user.role === 'admin' ? '👑 管理员' : '👤 用户';
             
             // 状态显示
@@ -833,6 +835,7 @@ async function loadUsers() {
                 <td style="padding: 15px;">${roleText}</td>
                 <td style="padding: 15px;">${statusBadge}</td>
                 <td style="padding: 15px; color: #6c757d; font-size: 0.9rem;">${createdAt}</td>
+                <td style="padding: 15px; color: #6c757d; font-size: 0.9rem;">${updatedAt}</td>
                 <td style="padding: 15px; text-align: center;">
                     <button class="btn btn-primary" onclick="editUser(${user.id})" style="padding: 6px 12px; font-size: 0.85rem; margin-right: 5px;">
                         ✏️ 编辑

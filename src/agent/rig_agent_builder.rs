@@ -43,6 +43,10 @@ impl RigAgentBuilder {
 
         // 初始化Embedding客户端
         let embedding_model = self.init_embedding_client();
+        info!(
+            model = %self.config.embedding_model,
+            "Initialized embedding model"
+        );
 
         // 创建上下文和代理
         let context = RigAgentContext {

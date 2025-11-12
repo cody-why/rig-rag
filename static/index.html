@@ -1,10 +1,10 @@
 <!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>AI助手 嵌入示例</title> <style>body{font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, "Open Sans", "Helvetica Neue", sans-serif;max-width:800px;margin:0 auto;padding:20px;line-height:1.6;}h1{color:#0ea5e9;border-bottom:1px solid #e5e7eb;padding-bottom:10px;}.section{margin:30px 0;}pre{background-color:#f3f4f6;padding:15px;border-radius:5px;overflow-x:auto;font-family:monospace;line-height:1.4;}code{background-color:rgba(0, 0, 0, 0.05);padding:2px 4px;border-radius:3px;font-family:monospace;}table{width:100%;border-collapse:collapse;margin:20px 0;}th, td{border:1px solid #e5e7eb;padding:8px 12px;text-align:left;}th{background-color:#f9fafb;}</style></head><body><h1>AI助手 嵌入式组件示例</h1><div class="section"><h2>简介</h2><p> AI助手 可以轻松嵌入到任何网站中，只需添加一行 JavaScript 代码。 聊天组件将作为浮动窗口出现在您的页面上，用户可以随时打开或关闭它。 </p></div><div class="section"><h2>基本嵌入方法</h2><p>将以下代码添加到您的 HTML 页面中：</p> <pre>&lt;!-- 1. 引入 RigChat 脚本 --&gt;
-&lt;script src="https://your-server.com/chatbot.js"&gt;&lt;/script&gt;
+&lt;script src="https://your-chat-server.com/static/js/chatbot.js"&gt;&lt;/script&gt;
 
 &lt;!-- 2. 创建聊天组件实例 --&gt;
 &lt;script&gt;
     const chatbot = new RigChat({
-        apiBase: "https://your-api-server.com",  // API 服务器地址
+        apiBase: "https://your-chat-server.com",  // AI Chat 服务器地址
         title: "客服助手",                       // 聊天窗口标题
         welcomeMessage: "您好！我是您的智能助手", // 欢迎消息
         buttonIcon: "ai",                    // 按钮图标
@@ -16,7 +16,7 @@
         defaultHeight: 550                     // 默认高度
     });
 &lt;/script&gt;</pre> <p>所有配置选项都是可选的。如果不提供，将使用默认值。</p></div><div class="section"><h2>配置选项</h2><p>在创建 RigChat 实例时，您可以传入以下配置选项：</p><table><tr><th>选项</th><th>默认值</th><th>说明</th></tr><tr><td>apiBase</td><td>当前域名</td><td>Rig API 的基础 URL</td></tr><tr><td>theme</td><td>"light"</td><td>主题颜色 ("light" 或 "dark")</td></tr><tr><td>position</td><td>"right"</td><td>聊天窗口位置 ("right" 或 "left")</td></tr><tr><td>welcomeMessage</td><td>"Welcome to AI Assistant! How can I help you today?"</td><td>初始欢迎消息</td></tr><tr><td>title</td><td>"AI Assistant"</td><td>聊天窗口标题</td></tr><tr><td>buttonIcon</td><td>"ai"</td><td>聊天按钮图标名称</td></tr><tr><td>placeholder</td><td>"Type your message..."</td><td>输入框提示文字</td></tr><tr><td>containerId</td><td>"rig-chat-container"</td><td>聊天组件容器的 ID</td></tr><tr><td>defaultWidth</td><td>450</td><td>默认宽度</td></tr><tr><td>defaultHeight</td><td>550</td><td>默认高度</td></tr></table><p>示例：使用自定义配置创建聊天组件</p> <pre>const chatbot = new RigChat({
-    apiBase: "https://api.example.com",
+    apiBase: "https://your-chat-server.com",
     theme: "dark",
     position: "left",
     title: "智能客服",
