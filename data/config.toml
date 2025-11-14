@@ -1,6 +1,6 @@
 [log]
 level = "info,rig_rag=debug,rig=warn,lance=warn"
-to_file = true
+to_file = false
 to_stdout = true
 file_path = "logs"
 file_name = "app.log"

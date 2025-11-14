@@ -22,6 +22,10 @@ pub struct RigAgent {
     pub context: RwLock<RigAgentContext>,
 }
 
+// 显式实现 Send，因为 AtomicPtr 和 RwLock 都是 Send 的
+unsafe impl Send for RigAgent {}
+unsafe impl Sync for RigAgent {}
+
 #[derive(Clone)]
 pub struct RigAgentContext {
     pub temperature: f64,

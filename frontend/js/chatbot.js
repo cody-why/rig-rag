@@ -811,33 +811,34 @@ class RigChat {
         const decoder = new TextDecoder();
         
         const streamMessageId = this.addStreamMessage();
+        let buffer = ''; 
+        
         try {
             while (true) {
                 const { done, value } = await reader.read();
                 
                 if (done) {
+                    // 处理缓冲区中剩余的数据
+                    if (buffer.trim()) {
+                        const lines = buffer.split('\n\n');
+                        for (const line of lines) {
+                            if (line.trim()) {
+                                this.processSSELine(line.trim(), streamMessageId);
+                            }
+                        }
+                    }
                     break;
                 }
                 
-                // 解码数据
                 const chunk = decoder.decode(value, { stream: true });
-                const lines = chunk.split('\n\n');
-                console.log(lines);
-                for (const line of lines) {
-                    if (line.startsWith('data: ')) {
-                        const data = line.slice(6);
-                        if (data === '[DONE]') {
-                            // 流结束
-                            this.finalizeStreamMessage(streamMessageId);
-                            return;
-                        }
-                        // 更新流式消息
-                        this.updateStreamMessage(streamMessageId, data.replace(/\[LF\]/g, '\n'));
-                    }
-                    else if (line.startsWith('event: user_id\ndata: ')) {
-                        const event = line.slice(21).trim();
-                       // 保存user_id
-                       localStorage.setItem('rig_chat_user_id', event);
+                buffer += chunk;
+                
+                const events = buffer.split('\n\n');
+                buffer = events.pop() || '';
+                
+                for (const event of events) {
+                    if (event.trim()) {
+                        this.processSSELine(event.trim(), streamMessageId);
                     }
                 }
             }
@@ -845,6 +846,41 @@ class RigChat {
             console.error('Stream reading error:', error);
             this.removeStreamMessage(streamMessageId);
             this.addMessage('Sorry, there was an error reading the stream.', false);
+        }
+    }
+
+    // 处理单个SSE事件（可能是多行）
+    processSSELine(event, streamMessageId) {
+        const lines = event.split('\n');
+        let eventType = null;
+        let data = null;
+        
+        // 解析SSE事件格式
+        for (const line of lines) {
+            if (line.startsWith('event: ')) {
+                eventType = line.slice(7).trim();
+            } else if (line.startsWith('data: ')) {
+                data = line.slice(6);
+            }
+        }
+        
+        // 如果没有明确的event类型，但第一行是data，则作为普通数据事件处理
+        if (!eventType && lines.length === 1 && lines[0].startsWith('data: ')) {
+            data = lines[0].slice(6);
+        }
+        
+        // 处理数据
+        if (data !== null) {
+            if (eventType === 'user_id') {
+                localStorage.setItem('rig_chat_user_id', data.trim());
+            } else {
+                if (data === '[DONE]') {
+                    this.finalizeStreamMessage(streamMessageId);
+                    return;
+                }
+                // 更新流式消息
+                this.updateStreamMessage(streamMessageId, data.replace(/\[LF\]/g, '\n'));
+            }
         }
     }
 
