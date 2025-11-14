@@ -107,12 +107,12 @@ impl RigAgent {
             let mut stream = stream_request.await;
             while let Some(content) = stream.next().await {
                 match content {
-                    Ok(MultiTurnStreamItem::StreamItem(StreamedAssistantContent::Text(Text {
+                    Ok(MultiTurnStreamItem::StreamAssistantItem(StreamedAssistantContent::Text(Text {
                         text,
                     }))) => {
                         yield text;
                     },
-                    Ok(MultiTurnStreamItem::StreamItem(StreamedAssistantContent::Reasoning(
+                    Ok(MultiTurnStreamItem::StreamAssistantItem(StreamedAssistantContent::Reasoning(
                         Reasoning { reasoning, .. },
                     ))) => {
                         // yield reasoning.join("\n");

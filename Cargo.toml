@@ -9,8 +9,8 @@ tokio-stream = "0.1"
 async-stream = "0.3"
 
 # git="https://github.com/0xPlaygrounds/rig"
-# rig-core = { version = "0.23", features = ["derive", "rayon", "reqwest-rustls"], default-features = false }
-rig-core = { version = "0.23", path = "../../github/rig/rig-core", features = ["derive", "rayon", "reqwest-rustls"], default-features = false }
+# rig-core = { version = "0.24", features = ["derive", "rayon", "reqwest-rustls"], default-features = false }
+rig-core = { version = "0.24", path = "../../github/rig/rig-core", features = ["derive", "rayon", "reqwest-rustls"], default-features = false }
 
 rig-qdrant = { version = "0.1", path = "../../github/rig/rig-qdrant" }
 qdrant-client = "1.15"
