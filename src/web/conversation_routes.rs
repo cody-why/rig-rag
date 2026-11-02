@@ -1,10 +1,12 @@
-use std::sync::Arc;
+use std::{net::SocketAddr, sync::Arc};
 
 use axum::{
     Router,
-    extract::{Json, Path, Query, State},
+    extract::{ConnectInfo, Extension, Json, Path, Query, State},
+    http::HeaderMap,
+    middleware,
     response::Json as ResponseJson,
-    routing::{get, post},
+    routing::{delete, get, post},
 };
 use serde::{Deserialize, Serialize};
 use tracing::{error, info};
@@ -15,6 +17,7 @@ use crate::{
         Conversation, ConversationMessage, ConversationStats, ConversationStatus,
         ConversationStore, CreateMessageRequest, DocumentStore, UserInteractionStats,
     },
+    web::auth_routes::{Claims, require_admin_auth_middleware},
 };
 
 type AppState = (Arc<RigAgent>, Arc<DocumentStore>, Arc<ConversationStore>);
@@ -74,12 +77,10 @@ pub struct AdminPaginationQuery {
 }
 
 pub fn create_conversation_router() -> Router<AppState> {
-    Router::new()
+    let public_routes = Router::new()
         .route(
             "/api/conversation/{conversation_id}",
-            get(get_conversation)
-                .put(update_conversation)
-                .delete(delete_conversation),
+            get(get_conversation).put(update_conversation),
         )
         .route(
             "/api/conversation/{conversation_id}/messages",
@@ -89,7 +90,14 @@ pub fn create_conversation_router() -> Router<AppState> {
             "/api/user/{user_id}/conversations",
             get(get_user_conversations),
         )
-        .route("/api/user/{user_id}/stats", get(get_user_interaction_stats))
+        .route("/api/user/{user_id}/stats", get(get_user_interaction_stats));
+
+    // 删除对话/清理旧记录等写操作：仅 Admin，并记录操作者与 IP
+    let admin_routes = Router::new()
+        .route(
+            "/api/conversation/{conversation_id}",
+            delete(delete_conversation),
+        )
         .route("/api/admin/conversations", get(get_all_conversations))
         .route(
             "/api/admin/conversations/stats",
@@ -99,6 +107,28 @@ pub fn create_conversation_router() -> Router<AppState> {
             "/api/admin/conversations/cleanup",
             post(cleanup_old_conversations),
         )
+        .route_layer(middleware::from_fn(require_admin_auth_middleware));
+
+    public_routes.merge(admin_routes)
+}
+
+/// 解析客户端 IP：优先 X-Forwarded-For / X-Real-IP，否则用直连地址
+fn client_ip(headers: &HeaderMap, addr: SocketAddr) -> String {
+    if let Some(xff) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok())
+        && let Some(first) = xff.split(',').next()
+    {
+        let ip = first.trim();
+        if !ip.is_empty() {
+            return ip.to_string();
+        }
+    }
+    if let Some(real) = headers.get("x-real-ip").and_then(|v| v.to_str().ok()) {
+        let ip = real.trim();
+        if !ip.is_empty() {
+            return ip.to_string();
+        }
+    }
+    addr.ip().to_string()
 }
 
 /// 获取对话详情
@@ -143,20 +173,52 @@ pub async fn update_conversation(
     }
 }
 
-/// 删除对话（硬删除）
+/// 删除对话（硬删除，含其全部消息）
 pub async fn delete_conversation(
     State((_, _, conversation_store)): State<AppState>,
+    Extension(claims): Extension<Claims>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Path(conversation_id): Path<String>,
 ) -> ResponseJson<serde_json::Value> {
+    let client_ip = client_ip(&headers, addr);
+    info!(
+        user_id = claims.user_id,
+        username = %claims.sub,
+        role = ?claims.role,
+        client_ip = %client_ip,
+        conversation_id = %conversation_id,
+        "Deleting conversation and messages"
+    );
+
     match conversation_store
         .delete_conversation(&conversation_id)
         .await
     {
-        Ok(_) => ResponseJson(
-            serde_json::json!({"success": true, "message": "Conversation deleted successfully"}),
-        ),
+        Ok(deleted_messages) => {
+            info!(
+                user_id = claims.user_id,
+                username = %claims.sub,
+                client_ip = %client_ip,
+                conversation_id = %conversation_id,
+                deleted_messages,
+                "Deleted conversation and messages"
+            );
+            ResponseJson(serde_json::json!({
+                "success": true,
+                "message": "Conversation deleted successfully",
+                "deleted_messages": deleted_messages,
+            }))
+        }
         Err(e) => {
-            error!("Failed to delete conversation: {}", e);
+            error!(
+                user_id = claims.user_id,
+                username = %claims.sub,
+                client_ip = %client_ip,
+                conversation_id = %conversation_id,
+                "Failed to delete conversation: {}",
+                e
+            );
             ResponseJson(serde_json::json!({"success": false, "error": e.to_string()}))
         }
     }
@@ -302,8 +364,13 @@ pub async fn get_conversation_stats(
 /// 清理旧对话记录
 pub async fn cleanup_old_conversations(
     State((_, _, conversation_store)): State<AppState>,
+    Extension(claims): Extension<Claims>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(payload): Json<CleanupRequest>,
 ) -> ResponseJson<serde_json::Value> {
+    let client_ip = client_ip(&headers, addr);
+
     if payload.days_to_keep < 1 {
         return ResponseJson(serde_json::json!({
             "success": false,
@@ -311,12 +378,27 @@ pub async fn cleanup_old_conversations(
         }));
     }
 
+    info!(
+        user_id = claims.user_id,
+        username = %claims.sub,
+        client_ip = %client_ip,
+        days_to_keep = payload.days_to_keep,
+        "Cleaning up old conversations"
+    );
+
     match conversation_store
         .cleanup_old_data(payload.days_to_keep)
         .await
     {
         Ok(deleted_count) => {
-            info!("Cleaned up {} old conversations", deleted_count);
+            info!(
+                user_id = claims.user_id,
+                username = %claims.sub,
+                client_ip = %client_ip,
+                deleted_count,
+                days_to_keep = payload.days_to_keep,
+                "Cleaned up old conversations"
+            );
             ResponseJson(serde_json::json!({
                 "success": true,
                 "deleted_count": deleted_count,
@@ -324,7 +406,13 @@ pub async fn cleanup_old_conversations(
             }))
         }
         Err(e) => {
-            error!("Failed to cleanup old conversations: {}", e);
+            error!(
+                user_id = claims.user_id,
+                username = %claims.sub,
+                client_ip = %client_ip,
+                "Failed to cleanup old conversations: {}",
+                e
+            );
             ResponseJson(serde_json::json!({
                 "success": false,
                 "error": e.to_string()

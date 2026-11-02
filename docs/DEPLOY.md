@@ -26,7 +26,7 @@ cp env.example .env
 
 
 注意事项：
-- 生产环境务必更换 `JWT_SECRET`、`PREAMBLE_SECRET_KEY`、`DEFAULT_ADMIN_PASSWORD`。
+- 生产环境必须设置随机 `JWT_SECRET`（建议 `openssl rand -hex 32`；占位值会直接拒绝启动），并更换 `PREAMBLE_SECRET_KEY`、`DEFAULT_ADMIN_PASSWORD`。
 - 如使用兼容网关，需同步修改 `OPENAI_BASE_URL` 与 `EMBEDDING_BASE_URL`。
 
 

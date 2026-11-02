@@ -1,9 +1,10 @@
-use std::sync::Arc;
+use std::{net::SocketAddr, sync::Arc};
 
 use axum::{
     Router,
-    extract::{Json, Multipart, Path, Query, State},
-    http::StatusCode,
+    extract::{ConnectInfo, Extension, Json, Multipart, Path, Query, State},
+    http::{HeaderMap, StatusCode},
+    middleware,
     response::{IntoResponse, Json as ResponseJson, Response},
     routing::{delete, get, post, put},
 };
@@ -14,6 +15,9 @@ use crate::utils::DocumentParser;
 use crate::{
     agent::RigAgent,
     db::{Document, DocumentStore},
+    web::auth_routes::{
+        Claims, require_admin_auth_middleware, require_user_auth_middleware,
+    },
 };
 
 // State 类型别名
@@ -78,14 +82,15 @@ impl From<Document> for DocumentResponse {
     }
 }
 
-/// 创建文档路由 - 查询操作
+/// 创建文档路由 - 查询操作（需登录）
 pub fn create_document_query_router() -> Router<AppState> {
     Router::new()
         .route("/api/documents", get(list_documents))
         .route("/api/documents/{id}", get(get_document))
+        .route_layer(middleware::from_fn(require_user_auth_middleware))
 }
 
-/// 创建文档路由 - 修改操作
+/// 创建文档路由 - 修改操作（仅 Admin；鉴权绑在路由上，避免 merge 后丢失）
 pub fn create_document_mutation_router() -> Router<AppState> {
     Router::new()
         .route("/api/documents", post(create_document))
@@ -93,6 +98,7 @@ pub fn create_document_mutation_router() -> Router<AppState> {
         // .route("/api/documents/reset", post(reset_documents))
         .route("/api/documents/{id}", put(update_document))
         .route("/api/documents/{id}", delete(delete_document))
+        .route_layer(middleware::from_fn(require_admin_auth_middleware))
 }
 
 async fn list_documents(
@@ -147,18 +153,61 @@ async fn get_document(
     }
 }
 
+/// 解析客户端 IP：优先 X-Forwarded-For / X-Real-IP，否则用直连地址
+fn client_ip(headers: &HeaderMap, addr: SocketAddr) -> String {
+    if let Some(xff) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok())
+        && let Some(first) = xff.split(',').next()
+    {
+        let ip = first.trim();
+        if !ip.is_empty() {
+            return ip.to_string();
+        }
+    }
+    if let Some(real) = headers.get("x-real-ip").and_then(|v| v.to_str().ok()) {
+        let ip = real.trim();
+        if !ip.is_empty() {
+            return ip.to_string();
+        }
+    }
+    addr.ip().to_string()
+}
+
 async fn create_document(
     State((agent, document_store)): State<AppState>,
+    Extension(claims): Extension<Claims>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(req): Json<CreateDocumentRequest>,
 ) -> Response {
-    info!("Creating document");
+    let client_ip = client_ip(&headers, addr);
+    let filename = match sanitize_document_filename(&req.filename, false) {
+        Ok(name) => name,
+        Err(msg) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                ResponseJson(ErrorResponse { error: msg }),
+            )
+                .into_response();
+        }
+    };
+
+    info!(
+        user_id = claims.user_id,
+        username = %claims.sub,
+        role = ?claims.role,
+        client_ip = %client_ip,
+        filename = %filename,
+        "Creating document"
+    );
 
     process_and_save_document(
         agent,
         document_store,
-        &req.filename,
+        &filename,
         &req.content,
         "Created",
+        &claims,
+        &client_ip,
     )
     .await
     .map_err(|(status, error)| (status, ResponseJson(ErrorResponse { error })))
@@ -167,15 +216,29 @@ async fn create_document(
 
 async fn update_document(
     State((agent, document_store)): State<AppState>,
+    Extension(claims): Extension<Claims>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Path(id): Path<String>,
     Json(req): Json<UpdateDocumentRequest>,
 ) -> Result<ResponseJson<DocumentResponse>, StatusCode> {
-    info!("Updating document");
+    let client_ip = client_ip(&headers, addr);
+    info!(
+        user_id = claims.user_id,
+        username = %claims.sub,
+        role = ?claims.role,
+        client_ip = %client_ip,
+        doc_id = %id,
+        "Updating document"
+    );
     match document_store.get_document(&id).await {
         Ok(Some(mut doc)) => {
             doc.content = req.content.clone();
-            if let Some(filename) = req.filename.clone() {
-                doc.source = filename;
+            if let Some(filename) = req.filename.as_ref() {
+                doc.source = sanitize_document_filename(filename, false).map_err(|e| {
+                    warn!("Invalid filename on update: {}", e);
+                    StatusCode::BAD_REQUEST
+                })?;
             }
             doc.updated_at = chrono::Utc::now();
 
@@ -195,7 +258,14 @@ async fn update_document(
                 .await
             {
                 Ok(_) => {
-                    info!("Updated document: {}", doc.id);
+                    info!(
+                        user_id = claims.user_id,
+                        username = %claims.sub,
+                        client_ip = %client_ip,
+                        doc_id = %doc.id,
+                        filename = %doc.source,
+                        "Updated document"
+                    );
 
                     // 保存文件备份
                     if let Some(backup) = crate::utils::get_file_backup() {
@@ -231,9 +301,20 @@ async fn update_document(
 
 async fn delete_document(
     State((agent, document_store)): State<AppState>,
+    Extension(claims): Extension<Claims>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<StatusCode, StatusCode> {
-    info!("Deleting document: {}", id);
+    let client_ip = client_ip(&headers, addr);
+    info!(
+        user_id = claims.user_id,
+        username = %claims.sub,
+        role = ?claims.role,
+        client_ip = %client_ip,
+        doc_id = %id,
+        "Deleting document"
+    );
     // 首先检查这个文档是否存在，以及是否是分块文档
     match document_store.get_document(&id).await {
         Ok(Some(doc)) => {
@@ -249,7 +330,14 @@ async fn delete_document(
             // 删除文档
             match document_store.delete_document(&delete_id).await {
                 Ok(_) => {
-                    info!("Deleted document(s) with base ID: {}", backup_id);
+                    info!(
+                        user_id = claims.user_id,
+                        username = %claims.sub,
+                        client_ip = %client_ip,
+                        doc_id = %backup_id,
+                        filename = %doc.source,
+                        "Deleted document"
+                    );
 
                     // 删除文件备份
                     if let Some(backup) = crate::utils::get_file_backup() {
@@ -288,9 +376,19 @@ async fn delete_document(
 
 async fn upload_document(
     State((agent, document_store)): State<AppState>,
+    Extension(claims): Extension<Claims>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     mut multipart: Multipart,
 ) -> Response {
-    info!("Uploading document");
+    let client_ip = client_ip(&headers, addr);
+    info!(
+        user_id = claims.user_id,
+        username = %claims.sub,
+        role = ?claims.role,
+        client_ip = %client_ip,
+        "Uploading document"
+    );
     let mut filename = String::new();
     let mut file_data = None;
 
@@ -359,6 +457,18 @@ async fn upload_document(
             .into_response();
     }
 
+    // 只保留文件名，拒绝路径穿越；上传必须带合法扩展名
+    let filename = match sanitize_document_filename(&filename, true) {
+        Ok(name) => name,
+        Err(msg) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                ResponseJson(ErrorResponse { error: msg }),
+            )
+                .into_response();
+        }
+    };
+
     let file_data = file_data.unwrap();
 
     // 解析文档内容
@@ -389,16 +499,35 @@ async fn upload_document(
     };
 
     info!(
-        "Parsed document '{}', extracted {} chars",
-        filename,
-        content.len()
+        user_id = claims.user_id,
+        username = %claims.sub,
+        client_ip = %client_ip,
+        filename = %filename,
+        chars = content.len(),
+        "Parsed uploaded document"
     );
 
     // 处理文档
-    match process_and_save_document(agent, document_store, &filename, &content, "Uploaded").await {
+    match process_and_save_document(
+        agent,
+        document_store,
+        &filename,
+        &content,
+        "Uploaded",
+        &claims,
+        &client_ip,
+    )
+    .await
+    {
         Ok(response) => response.into_response(),
         Err(status) => {
-            error!("Failed to upload document: {}", status.1);
+            error!(
+                user_id = claims.user_id,
+                username = %claims.sub,
+                client_ip = %client_ip,
+                "Failed to upload document: {}",
+                status.1
+            );
             (status.0, ResponseJson(ErrorResponse { error: status.1 })).into_response()
         }
     }
@@ -426,6 +555,79 @@ async fn reset_documents(
     }
 }
 
+/// 简单 percent-decode（最多 3 轮），挡住 `%2e%2e%2f` 等编码穿越
+fn percent_decode_filename(input: &str) -> String {
+    let mut current = input.as_bytes().to_vec();
+    for _ in 0..3 {
+        let mut out = Vec::with_capacity(current.len());
+        let mut i = 0;
+        let mut changed = false;
+        while i < current.len() {
+            if current[i] == b'%'
+                && i + 2 < current.len()
+                && let Ok(byte) = u8::from_str_radix(
+                    std::str::from_utf8(&current[i + 1..i + 3]).unwrap_or(""),
+                    16,
+                )
+            {
+                out.push(byte);
+                i += 3;
+                changed = true;
+            } else {
+                out.push(current[i]);
+                i += 1;
+            }
+        }
+        if !changed {
+            break;
+        }
+        current = out;
+    }
+    String::from_utf8_lossy(&current).into_owned()
+}
+
+/// 校验文档文件名：只接受纯文件名，拒绝任何路径形式。
+/// `require_supported_ext` 为 true 时（文件上传）强制扩展名白名单。
+fn sanitize_document_filename(raw: &str, require_supported_ext: bool) -> Result<String, String> {
+    let decoded = percent_decode_filename(raw);
+    let name = decoded.trim();
+    if name.is_empty() {
+        return Err("文件名不能为空".to_string());
+    }
+
+    // 拒绝路径：绝对路径、相对穿越、目录分隔、盘符/ADS 等
+    if name == "."
+        || name == ".."
+        || name.starts_with('/')
+        || name.starts_with('\\')
+        || name.contains("..")
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains(':')
+    {
+        return Err("不接受路径形式的文件名，请只使用文件名".to_string());
+    }
+
+    if name.contains('\0')
+        || name.chars().any(|c| {
+            c.is_control() || matches!(c, ';' | '<' | '>' | '"' | '|' | '*' | '?')
+        })
+    {
+        return Err("文件名包含非法字符".to_string());
+    }
+
+    if name.chars().count() > 180 {
+        return Err("文件名过长（最多 180 个字符）".to_string());
+    }
+
+    if require_supported_ext && crate::utils::DocumentType::from_filename(name).is_none() {
+        let supported = DocumentParser::supported_extensions().join(", ");
+        return Err(format!("不支持的文件类型。支持的格式：{}", supported));
+    }
+
+    Ok(name.to_string())
+}
+
 /// 处理并保存文档（包含分块、embedding、备份）
 async fn process_and_save_document(
     agent: Arc<RigAgent>,
@@ -433,10 +635,17 @@ async fn process_and_save_document(
     filename: &str,
     content: &str,
     action: &str, // "Created" 或 "Uploaded"
+    claims: &Claims,
+    client_ip: &str,
 ) -> Result<ResponseJson<DocumentResponse>, (StatusCode, String)> {
     // 检查文件是否为空
     if content.trim().is_empty() {
-        warn!("⚠️ Attempted to upload empty file: {}", filename);
+        warn!(
+            client_ip = %client_ip,
+            username = %claims.sub,
+            "Attempted to upload empty file: {}",
+            filename
+        );
         return Err((StatusCode::BAD_REQUEST, "文件内容不能为空".to_string()));
     }
 
@@ -501,11 +710,16 @@ async fn process_and_save_document(
     {
         Ok(_) => {
             info!(
-                "{} document '{}' as {} chunks with base ID: {}",
-                action,
-                filename,
-                documents.len(),
-                base_id
+                user_id = claims.user_id,
+                username = %claims.sub,
+                role = ?claims.role,
+                client_ip = %client_ip,
+                action = action,
+                filename = %filename,
+                chunks = documents.len(),
+                doc_id = %base_id,
+                "{} document successfully",
+                action
             );
 
             // 保存文件备份
@@ -530,7 +744,14 @@ async fn process_and_save_document(
             Ok(ResponseJson(DocumentResponse::from(documents[0].clone())))
         }
         Err(e) => {
-            error!("Failed to {} document: {}", action.to_lowercase(), e);
+            error!(
+                user_id = claims.user_id,
+                username = %claims.sub,
+                client_ip = %client_ip,
+                "Failed to {} document: {}",
+                action.to_lowercase(),
+                e
+            );
             Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "保存文档失败".to_string(),

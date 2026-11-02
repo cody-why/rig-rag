@@ -37,7 +37,7 @@ pub fn init_logger() -> Result<(), Box<dyn std::error::Error>> {
             .rotation(Rotation::DAILY)
             // .filename_prefix("app")
             .filename_suffix(&config.file_name)
-            .max_log_files(180)
+            .max_log_files(30)
             .build(&config.file_path)
             .expect("Init file appender failed");
 

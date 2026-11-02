@@ -605,7 +605,8 @@ impl ConversationStore {
     }
 
     /// 删除对话（硬删除, 会话及其消息）
-    pub async fn delete_conversation(&self, conversation_id: &str) -> Result<()> {
+    /// 返回删除的消息条数
+    pub async fn delete_conversation(&self, conversation_id: &str) -> Result<u64> {
         // 使用事务确保会话与其消息要么一起删除，要么都不删除
         let mut tx = self.pool.begin().await?;
 
@@ -646,11 +647,7 @@ impl ConversationStore {
             .await
             .context("Failed to commit delete transaction")?;
 
-        info!(
-            "Deleted conversation: {} ({} messages removed)",
-            conversation_id, deleted_messages
-        );
-        Ok(())
+        Ok(deleted_messages)
     }
 
     /// 清理旧数据（可选功能）

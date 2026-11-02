@@ -1,14 +1,17 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use axum::{
     Router,
     extract::Path,
     http::{HeaderValue, Method},
-    middleware,
     response::Html,
     routing::get,
 };
-use tower_governor::{GovernorLayer, governor::GovernorConfigBuilder};
+use tower_governor::{
+    GovernorLayer,
+    governor::GovernorConfigBuilder,
+    key_extractor::SmartIpKeyExtractor,
+};
 use tower_http::cors::CorsLayer;
 
 use crate::{
@@ -37,14 +40,23 @@ pub async fn create_router(
             axum::http::header::AUTHORIZATION,
         ]);
 
-    // 配置频率限制
+    // 同 IP 聊天限流：突发 5 条，之后约每 2 秒补 1 条
     let chat_governor_conf = Arc::new(
         GovernorConfigBuilder::default()
-            .per_second(3)
-            .burst_size(10)
+            .per_second(2)
+            .burst_size(5)
+            .key_extractor(SmartIpKeyExtractor)
             .finish()
-            .unwrap(),
+            .expect("chat governor config"),
     );
+    let chat_limiter = chat_governor_conf.limiter().clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+            chat_limiter.retain_recent();
+        }
+    });
 
     // 用户管理和认证路由（独立state）
     let auth_user_router =
@@ -57,23 +69,18 @@ pub async fn create_router(
         .route("/admin", get(serve_admin))
         .route("/static/{*file}", get(static_file));
 
-    // 需要登录即可访问的用户路由（所有用户）
+    // 查询路由（鉴权已绑在各子路由内部）
     let user_query_router = Router::new()
         .merge(crate::web::create_document_query_router())
-        .merge(crate::web::create_preamble_query_router())
-        .merge(crate::web::create_document_mutation_router())
-        .layer(tower_http::limit::RequestBodyLimitLayer::new(
-            10 * 1024 * 1024,
-        )) // 文档上传限制
-        .route_layer(middleware::from_fn(require_user_auth_middleware));
+        .merge(crate::web::create_preamble_query_router());
 
-    // 需要Admin权限的修改路由
+    // 修改路由（Admin 鉴权已绑在各子路由内部；此处只加体积限制）
     let admin_mutation_router = Router::new()
+        .merge(crate::web::create_document_mutation_router())
         .merge(crate::web::create_preamble_mutation_router())
         .layer(tower_http::limit::RequestBodyLimitLayer::new(
             10 * 1024 * 1024,
-        )) // 文档上传限制
-        .route_layer(middleware::from_fn(require_admin_auth_middleware));
+        )); // 文档上传限制
 
     // 分别创建不同状态的路由
     let chat_router = create_chat_router()
@@ -129,6 +136,11 @@ async fn static_file(
     Path(file): Path<String>,
 ) -> Result<axum::response::Response, axum::http::StatusCode> {
     let file_path = file.trim_start_matches('/');
+
+    // 拒绝路径穿越，避免 /static/../data/... 读出敏感文件
+    if file_path.split(['/', '\\']).any(|seg| seg == ".." || seg.is_empty()) {
+        return Err(axum::http::StatusCode::NOT_FOUND);
+    }
 
     let full_path = format!("static/{}", file_path);
     let file_content = std::fs::read(&full_path).map_err(|_| axum::http::StatusCode::NOT_FOUND)?;

@@ -2,8 +2,9 @@ use std::sync::Arc;
 
 use axum::{
     Router,
-    extract::{Json, State},
+    extract::{Extension, Json, State},
     http::StatusCode,
+    middleware,
     response::Json as ResponseJson,
     routing::{get, put},
 };
@@ -11,7 +12,13 @@ use serde::{Deserialize, Serialize};
 use tokio::fs;
 use tracing::{error, info};
 
-use crate::{agent::RigAgent, db::DocumentStore};
+use crate::{
+    agent::RigAgent,
+    db::DocumentStore,
+    web::auth_routes::{
+        Claims, require_admin_auth_middleware, require_user_auth_middleware,
+    },
+};
 
 // State 类型别名
 type AppState = (Arc<RigAgent>, Arc<DocumentStore>);
@@ -30,12 +37,16 @@ pub struct PreambleResponse {
 
 /// 创建 Preamble 路由 - 查询操作（所有登录用户可访问）
 pub fn create_preamble_query_router() -> Router<AppState> {
-    Router::new().route("/api/preamble", get(get_preamble))
+    Router::new()
+        .route("/api/preamble", get(get_preamble))
+        .route_layer(middleware::from_fn(require_user_auth_middleware))
 }
 
 /// 创建 Preamble 路由 - 修改操作（仅管理员可访问）
 pub fn create_preamble_mutation_router() -> Router<AppState> {
-    Router::new().route("/api/preamble", put(update_preamble))
+    Router::new()
+        .route("/api/preamble", put(update_preamble))
+        .route_layer(middleware::from_fn(require_admin_auth_middleware))
 }
 
 async fn get_preamble(
@@ -51,6 +62,7 @@ async fn get_preamble(
 
 async fn update_preamble(
     State((agent, _)): State<AppState>,
+    Extension(claims): Extension<Claims>,
     Json(req): Json<UpdatePreambleRequest>,
 ) -> Result<ResponseJson<PreambleResponse>, StatusCode> {
     // 验证秘密密钥
@@ -60,11 +72,20 @@ async fn update_preamble(
     let provided_secret = req.secret_key.as_deref().unwrap_or("");
 
     if provided_secret != required_secret {
-        error!("❌ Preamble update failed: invalid secret key");
+        error!(
+            user_id = claims.user_id,
+            username = %claims.sub,
+            "Preamble update failed: invalid secret key"
+        );
         return Err(StatusCode::FORBIDDEN);
     }
 
-    info!("✅ Secret key verified, updating preamble");
+    info!(
+        user_id = claims.user_id,
+        username = %claims.sub,
+        role = ?claims.role,
+        "Updating preamble"
+    );
 
     // 更新 agent context 中的 preamble 并持久化到文件
     {

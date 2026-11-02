@@ -242,13 +242,23 @@ impl UserStore {
     pub async fn verify_password(&self, username: &str, password: &str) -> Result<Option<User>> {
         let user = self.get_user_by_username(username).await?;
 
-        if let Some(user) = user
-            && bcrypt::verify(password, &user.password_hash).context("Failed to verify password")?
-        {
-            return Ok(Some(user));
-        }
+        let Some(user) = user else {
+            return Ok(None);
+        };
 
-        Ok(None)
+        // bcrypt 是 CPU 密集操作，放到 blocking 线程池，避免占满 tokio worker
+        let password = password.to_string();
+        let password_hash = user.password_hash.clone();
+        let valid = tokio::task::spawn_blocking(move || bcrypt::verify(password, &password_hash))
+            .await
+            .context("bcrypt verification task failed")?
+            .context("Failed to verify password")?;
+
+        if valid {
+            Ok(Some(user))
+        } else {
+            Ok(None)
+        }
     }
 
     /// 列出所有用户

@@ -74,11 +74,12 @@ function updateUIPermissions() {
     const hasSpecial = hasSpecialAccess();
     
     // 管理员或有特殊访问权限的用户可以看到这些功能
-    const canAccessAdmin =  hasSpecial;
+    const canAccessAdmin = hasSpecial;
     
     // 获取需要权限控制的导航按钮
     const preambleNavBtn = document.querySelector('.nav-item[onclick*="preamble"]');
     const usersNavBtn = document.querySelector('.nav-item[onclick*="users"]');
+    const uploadNavBtn = document.querySelector('.nav-item[onclick*="upload"]');
     
     // 只有管理员或有特殊访问权限才能看到 Preamble 配置
     if (preambleNavBtn) {
@@ -87,6 +88,10 @@ function updateUIPermissions() {
     // 用户管理只有真正的管理员才能看到
     if (usersNavBtn) {
         usersNavBtn.style.display = isAdmin ? 'block' : 'none';
+    }
+    // 文档上传/增删改仅管理员（后端已强制 Admin）
+    if (uploadNavBtn) {
+        uploadNavBtn.style.display = isAdmin ? 'block' : 'none';
     }
 }
 
@@ -302,27 +307,52 @@ async function loadDocuments(page = 0) {
     }
 }
 
-// 创建文档元素
+// 创建文档元素（避免把恶意/超长文件名塞进 onclick，否则 HTML 属性会被 \0 截断导致按钮消失）
 function createDocumentElement(doc) {
     const div = document.createElement('div');
     div.className = 'document-item';
-    
+
     const createdAt = new Date(doc.created_at).toLocaleString('zh-CN');
     const updatedAt = new Date(doc.updated_at).toLocaleString('zh-CN');
-    
-    div.innerHTML = `
-        <h3>${escapeHtml(doc.filename)}</h3>
-        <div class="document-meta">
-            📅 创建时间: ${createdAt} | 🔄 更新时间: ${updatedAt}
-        </div>
-        <p>${escapeHtml(doc.preview)}</p>
-        <div class="document-actions">
-            <button class="btn btn-primary" onclick="editDocument('${doc.id}')">✏️ 编辑</button>
-            <button class="btn btn-secondary" onclick="viewDocument('${doc.id}')">👁️ 查看</button>
-            <button class="btn btn-danger" onclick="deleteDocument('${doc.id}', '${escapeHtml(doc.filename)}')">🗑️ 删除</button>
-        </div>
-    `;
-    
+    const filename = doc.filename || '';
+    const displayName =
+        filename.length > 120 ? `${filename.slice(0, 117)}...` : filename;
+
+    const title = document.createElement('h3');
+    title.textContent = displayName;
+    title.title = filename;
+    div.appendChild(title);
+
+    const meta = document.createElement('div');
+    meta.className = 'document-meta';
+    meta.textContent = `📅 创建时间: ${createdAt} | 🔄 更新时间: ${updatedAt}`;
+    div.appendChild(meta);
+
+    const preview = document.createElement('p');
+    preview.textContent = doc.preview || '';
+    div.appendChild(preview);
+
+    const actions = document.createElement('div');
+    actions.className = 'document-actions';
+
+    const editBtn = document.createElement('button');
+    editBtn.className = 'btn btn-primary';
+    editBtn.textContent = '✏️ 编辑';
+    editBtn.addEventListener('click', () => editDocument(doc.id));
+
+    const viewBtn = document.createElement('button');
+    viewBtn.className = 'btn btn-secondary';
+    viewBtn.textContent = '👁️ 查看';
+    viewBtn.addEventListener('click', () => viewDocument(doc.id));
+
+    const deleteBtn = document.createElement('button');
+    deleteBtn.className = 'btn btn-danger';
+    deleteBtn.textContent = '🗑️ 删除';
+    deleteBtn.addEventListener('click', () => deleteDocument(doc.id, filename));
+
+    actions.append(editBtn, viewBtn, deleteBtn);
+    div.appendChild(actions);
+
     return div;
 }
 

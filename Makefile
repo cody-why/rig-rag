@@ -8,11 +8,12 @@ build-f:
 	npm run build
 
 release:
-	cargo build --release --target x86_64-unknown-linux-musl
+	cargo zigbuild --release --target x86_64-unknown-linux-musl
 	mkdir -p ~/Downloads/release/
 	cp $(target_dir)/x86_64-unknown-linux-musl/release/$(name) $(target_dir)
+	open $(target_dir)
 
 release-win:
-	cargo build --release --target x86_64-pc-windows-gnu
+	cargo zigbuild --release --target x86_64-pc-windows-gnu
 	mkdir -p ~/Downloads/release/
 	cp $(target_dir)/x86_64-pc-windows-gnu/release/$(name).exe $(target_dir)
