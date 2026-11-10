@@ -1,7 +1,9 @@
+pub mod dir_docs;
 pub mod document_parser;
 pub mod file_backup;
 pub mod logger;
 
+pub use dir_docs::*;
 pub use document_parser::*;
 pub use file_backup::*;
 

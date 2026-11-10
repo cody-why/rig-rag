@@ -1,0 +1,21 @@
+[Unit]
+Description=__APP_DESC__
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=__APP_DIR__
+ExecStart=__APP_DIR__/__APP_BIN__
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+KillMode=mixed
+# .env 由进程内 dotenv 按 WorkingDirectory 加载，避免 systemd 解析特殊字符失败
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=__APP_NAME__
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

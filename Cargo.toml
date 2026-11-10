@@ -8,12 +8,8 @@ tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
 async-stream = "0.3"
 
-# git="https://github.com/0xPlaygrounds/rig"
-rig-core = { version = "0.24", features = ["derive", "rayon", "reqwest-rustls"], default-features = false }
-# rig-core = { version = "0.24", path = "../../github/rig/rig-core", features = ["derive", "rayon", "reqwest-rustls"], default-features = false }
-
-# rig-qdrant = { version = "0.1", path = "../../github/rig/rig-qdrant" }
-rig-qdrant = { version = "0.1" }
+# Facade re-exports rig-core + rig-agent; enable qdrant companion.
+rig = { version = "0.46", features = ["qdrant"] }
 qdrant-client = "1.15"
 
 chrono = { version = "0.4", features = ["serde"] }
@@ -23,9 +19,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.9"
 
-nanoid = "0.4"
+nanoid = "0.5"
 thiserror = "2"
-parking_lot = "0.12"
+parking_lot = "0.13"
 
 tracing = "0.1"
 tracing-appender = "0.2"
@@ -34,7 +30,7 @@ time = { version = "0.3" }
 
 # Web
 axum = { version = "0.8", features = ["multipart"] }
-tower-http = { version = "0.6", features = ["cors", "limit"] }
+tower-http = { version = "0.7", features = ["cors", "limit"] }
 tower = "0.5"
 tower_governor = { version = "0.8", features = ["axum"] }
 
@@ -42,21 +38,21 @@ tower_governor = { version = "0.8", features = ["axum"] }
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "tls-none"] }
 
 # Authentication
-jsonwebtoken = { version = "10", features = ["rust_crypto"] }
-bcrypt = "0.17"
+jsonwebtoken = { version = "11", features = ["rust_crypto"] }
+bcrypt = "0.19"
 
 mini-moka = "0.10"
 futures = "0.3"
 # reqwest = { version = "0.12", features = ["json","rustls-tls"], default-features = false }
 
 # Document parsing
-pdf-extract = "0.10"
-calamine = "0.31"
+pdf-extract = "0.12"
+calamine = "0.38"
 bytes = "1"
-zip = "6"
-quick-xml = "0.38"
+zip = "9"
+quick-xml = "0.42"
 encoding_rs = "0.8"
-chardetng = "0.1"
+chardetng = "1"
 
 # musl need OpenSSL
 # openssl = { version = "0.10", features = ["vendored"] }

@@ -42,7 +42,44 @@ async fn main() {
     // 为路由查询初始化 DocumentStore（供管理/查询接口使用）
     let document_store = Arc::new(DocumentStore::with_config(&config.qdrant));
 
+    // 同步本地 markdown 目录到向量库，纳入检索
+    {
+        let embedding_model = agent.context.read().embedding_model.clone();
+        match rig_rag::utils::sync_directory_documents(
+            &config.documents_dir,
+            &config.documents_exclude_dirs,
+            document_store.as_ref(),
+            embedding_model,
+        )
+        .await
+        {
+            Ok(result) => info!(
+                dir = %config.documents_dir,
+                files = result.files,
+                chunks = result.chunks,
+                changed = result.changed,
+                "Synced DOCUMENTS_DIR markdown into vector store"
+            ),
+            Err(e) => tracing::warn!(
+                dir = %config.documents_dir,
+                "Failed to sync DOCUMENTS_DIR: {}",
+                e
+            ),
+        }
+        // 目录文档变更后需要重建 agent 索引视图
+        agent.set_needs_rebuild(true).await;
+    }
+
     let agent = Arc::new(agent);
+
+    // 后台轮询目录变更：修改/增删 md 后自动同步
+    rig_rag::utils::spawn_documents_dir_watcher(
+        config.documents_dir.clone(),
+        config.documents_exclude_dirs.clone(),
+        config.documents_sync_interval_secs,
+        document_store.clone(),
+        agent.clone(),
+    );
 
     let app = web::create_router(agent, document_store, user_store).await;
 

@@ -3,22 +3,22 @@ use std::sync::atomic::{AtomicPtr, Ordering};
 use super::RigAgentBuilder;
 use crate::{
     config::{AppConfig, QdrantConfig},
-    db::{DocumentStore, SerializableQdrantVectorStore},
+    db::{DocumentStore, EmbeddingHandle, SerializableQdrantVectorStore},
 };
 use async_stream::stream;
 use futures::StreamExt;
 use parking_lot::RwLock;
 use rig::{
-    agent::{Agent, MultiTurnStreamItem, Text},
-    completion::Chat,
-    message::Reasoning,
-    prelude::CompletionClient,
-    providers::openai::{self},
-    streaming::{StreamedAssistantContent, StreamingChat},
+    Agent, AgentBuilder,
+    agent::MultiTurnStreamItem,
+    completion::Message,
+    message::AssistantContent,
+    providers::openai::OpenAI,
+    streaming::{Item, StreamEvent},
 };
 
 pub struct RigAgent {
-    pub agent: AtomicPtr<Agent<openai::CompletionModel>>,
+    pub agent: AtomicPtr<Agent>,
     pub context: RwLock<RigAgentContext>,
 }
 
@@ -30,12 +30,18 @@ unsafe impl Sync for RigAgent {}
 pub struct RigAgentContext {
     pub temperature: f64,
     pub openai_model: String,
-    pub client: openai::Client,
-    pub embedding_model: openai::EmbeddingModel,
+    pub client: OpenAI,
+    pub embedding_model: EmbeddingHandle,
     pub needs_rebuild: bool,
     pub qdrant_config: QdrantConfig,
     pub preamble_file: String,
     pub preamble: String,
+    /// 本地 markdown 文档目录（检索时一并纳入）
+    pub documents_dir: String,
+    /// 同步时排除的子目录
+    pub documents_exclude_dirs: Vec<String>,
+    /// RAG 检索 top_k
+    pub rag_top_k: usize,
 }
 
 impl RigAgent {
@@ -49,7 +55,7 @@ impl RigAgent {
     pub async fn chat(
         &self,
         message: &str,
-        history: Vec<rig::completion::Message>,
+        history: Vec<Message>,
     ) -> anyhow::Result<String> {
         // 检查是否需要重建agent
         let needs_rebuild = {
@@ -72,17 +78,18 @@ impl RigAgent {
         // 安全地解引用原子指针
         let agent = unsafe { &*agent_ptr };
         let response = agent
-            .chat(message, history)
+            .prompt(message)
+            .history(history)
             .await
             .map_err(|e| anyhow::anyhow!("Chat error: {}", e))?;
-        Ok(response)
+        Ok(response.output())
     }
 
     /// 动态流式聊天 - 使用当前最新的context构建临时agent进行流式聊天
     pub async fn stream_chat(
         &self,
         message: &str,
-        history: Vec<rig::completion::Message>,
+        history: Vec<Message>,
     ) -> anyhow::Result<impl futures::Stream<Item = String> + Unpin> {
         // 检查是否需要重建agent
         let needs_rebuild = {
@@ -104,27 +111,56 @@ impl RigAgent {
 
         // 安全地解引用原子指针
         let agent = unsafe { &*agent_ptr };
-        let stream_request = agent.stream_chat(message, history);
+        let mut stream_request = agent.prompt(message).history(history).stream();
 
         // 创建一个简化的流，将复杂的流式响应转换为简单的字符串流
         let stream = Box::pin(stream! {
-            let mut stream = stream_request.await;
-            while let Some(content) = stream.next().await {
+            let mut saw_text_delta = false;
+            let mut text_deltas = 0usize;
+
+            while let Some(content) = stream_request.next().await {
                 match content {
-                    Ok(MultiTurnStreamItem::StreamAssistantItem(StreamedAssistantContent::Text(Text {
+                    Ok(MultiTurnStreamItem::StreamAssistantItem(Item::Event(StreamEvent::Text {
                         text,
+                        ..
                     }))) => {
-                        yield text;
+                        if !text.is_empty() {
+                            saw_text_delta = true;
+                            text_deltas += 1;
+                            yield text;
+                        }
                     },
-                    Ok(MultiTurnStreamItem::StreamAssistantItem(StreamedAssistantContent::Reasoning(
-                        Reasoning { reasoning, .. },
-                    ))) => {
-                        // yield reasoning.join("\n");
-                        tracing::debug!("Reasoning: {:?}", reasoning);
-                        yield "Reasoning... Please wait...".to_string();
+                    Ok(MultiTurnStreamItem::StreamAssistantItem(Item::Event(StreamEvent::End {
+                        content,
+                        ..
+                    }))) => {
+                        // 部分兼容网关不推 delta，只在 End 给全文
+                        if !saw_text_delta
+                            && let AssistantContent::Text(text) = content
+                            && !text.text.is_empty()
+                        {
+                            tracing::debug!("Stream End without deltas, yielding full text");
+                            yield text.text;
+                        }
+                    },
+                    Ok(MultiTurnStreamItem::StreamAssistantItem(Item::Event(StreamEvent::Reasoning {
+                        ..
+                    }))) => {
+                        tracing::debug!("Reasoning stream event");
                     },
                     Ok(MultiTurnStreamItem::FinalResponse(res)) => {
-                        tracing::debug!("{:?}", res);
+                        if !saw_text_delta {
+                            let out = res.output();
+                            if !out.is_empty() {
+                                tracing::debug!("FinalResponse without deltas, yielding full text");
+                                yield out;
+                            }
+                        }
+                        tracing::debug!(
+                            text_deltas,
+                            usage = ?res.usage(),
+                            "Stream completed"
+                        );
                     },
                     Err(e) => {
                         yield format!("Error: {}", e);
@@ -144,6 +180,31 @@ impl RigAgent {
             let preamble = load_preamble(&self.context.read().preamble_file);
             self.context.write().preamble = preamble;
         }
+
+        // 重建前同步本地 markdown 目录，保证检索包含最新文件
+        {
+            let (documents_dir, exclude_dirs, embedding_model, qdrant_config) = {
+                let ctx = self.context.read();
+                (
+                    ctx.documents_dir.clone(),
+                    ctx.documents_exclude_dirs.clone(),
+                    ctx.embedding_model.clone(),
+                    ctx.qdrant_config.clone(),
+                )
+            };
+            let store = DocumentStore::with_config(&qdrant_config);
+            if let Err(e) = crate::utils::sync_directory_documents(
+                &documents_dir,
+                &exclude_dirs,
+                &store,
+                embedding_model,
+            )
+            .await
+            {
+                tracing::warn!("Failed to sync DOCUMENTS_DIR during rebuild: {}", e);
+            }
+        }
+
         let new_agent = self.build_agent().await?;
 
         // 替换 agent - 使用原子指针替换
@@ -163,20 +224,19 @@ impl RigAgent {
     }
 
     /// 从当前context构建agent，避免跨越await持有锁
-    async fn build_agent(&self) -> anyhow::Result<Agent<openai::CompletionModel>> {
-        // 提取构建agent所需的最小数据
-        let (embedding_model, qdrant_config) = {
+    async fn build_agent(&self) -> anyhow::Result<Agent> {
+        let (embedding_model, qdrant_config, top_k) = {
             let context = self.context.read();
             (
                 context.embedding_model.clone(),
                 context.qdrant_config.clone(),
+                context.rag_top_k,
             )
         };
 
-        let index = create_vector_index(&qdrant_config, &embedding_model).await?;
+        let index = create_vector_index(&qdrant_config, embedding_model).await?;
         let context = self.context.read();
-        let agent = context.build_with_vector_index(index.0, index.1);
-        Ok(agent)
+        Ok(context.build_with_vector_index(index, top_k))
     }
 
     pub async fn set_needs_rebuild(&self, needs_rebuild: bool) {
@@ -196,12 +256,9 @@ impl Drop for RigAgent {
 
 impl RigAgentContext {
     /// 构建基础 agent
-    pub fn build_basic(&self) -> Agent<openai::CompletionModel> {
-        self.client
-            .completion_model(&self.openai_model)
-            .completions_api()
-            .into_agent_builder()
-            .temperature(self.temperature) // 0.1-0.3 准确性高，0.5-0.7 创造性高
+    pub fn build_basic(&self) -> Agent {
+        AgentBuilder::new(self.client.chat(&self.openai_model))
+            .temperature(self.temperature)
             .preamble(&self.preamble)
             .build()
     }
@@ -209,15 +266,12 @@ impl RigAgentContext {
     /// 构建带有向量索引的RAG agent
     pub fn build_with_vector_index(
         &self,
-        vector_index: SerializableQdrantVectorStore<openai::EmbeddingModel>,
+        vector_index: SerializableQdrantVectorStore,
         top_k: usize,
-    ) -> Agent<openai::CompletionModel> {
+    ) -> Agent {
         let top_k = top_k.max(1);
         tracing::info!("✅ Building RAG agent with vector index, top_k={}", top_k);
-        self.client
-            .completion_model(&self.openai_model)
-            .completions_api()
-            .into_agent_builder()
+        AgentBuilder::new(self.client.chat(&self.openai_model))
             .temperature(self.temperature)
             .preamble(&self.preamble)
             .dynamic_context(top_k, vector_index)
@@ -225,24 +279,22 @@ impl RigAgentContext {
     }
 
     /// 构建带有向量索引的RAG agent
-    pub async fn build(&self) -> anyhow::Result<Agent<openai::CompletionModel>> {
-        let index = create_vector_index(&self.qdrant_config, &self.embedding_model).await?;
-        Ok(self.build_with_vector_index(index.0, index.1))
+    pub async fn build(&self) -> anyhow::Result<Agent> {
+        let index = create_vector_index(&self.qdrant_config, self.embedding_model.clone()).await?;
+        Ok(self.build_with_vector_index(index, self.rag_top_k))
     }
 
-    pub async fn create_vector_index(
-        &self,
-    ) -> anyhow::Result<(SerializableQdrantVectorStore<openai::EmbeddingModel>, usize)> {
-        create_vector_index(&self.qdrant_config, &self.embedding_model).await
+    pub async fn create_vector_index(&self) -> anyhow::Result<SerializableQdrantVectorStore> {
+        create_vector_index(&self.qdrant_config, self.embedding_model.clone()).await
     }
 }
 
 pub async fn create_vector_index(
     qdrant_config: &QdrantConfig,
-    embedding_model: &openai::EmbeddingModel,
-) -> anyhow::Result<(SerializableQdrantVectorStore<openai::EmbeddingModel>, usize)> {
-    let store: DocumentStore = DocumentStore::with_config(qdrant_config);
-    store.create_vector_index(embedding_model.clone()).await
+    embedding_model: EmbeddingHandle,
+) -> anyhow::Result<SerializableQdrantVectorStore> {
+    let store = DocumentStore::with_config(qdrant_config);
+    store.create_vector_index(embedding_model).await
 }
 
 /// 加载preamble - 从文件加载

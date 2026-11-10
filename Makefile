@@ -3,10 +3,6 @@
 target_dir=$(shell cargo metadata --format-version=1 | jq -r '.target_directory')
 name=rig-rag
 
-build-f:
-	# npm install
-	npm run build
-
 release:
 	cargo zigbuild --release --target x86_64-unknown-linux-musl
 	mkdir -p ~/Downloads/release/
@@ -17,3 +13,7 @@ release-win:
 	cargo zigbuild --release --target x86_64-pc-windows-gnu
 	mkdir -p ~/Downloads/release/
 	cp $(target_dir)/x86_64-pc-windows-gnu/release/$(name).exe $(target_dir)
+
+build-f:
+	# npm install
+	npm run build

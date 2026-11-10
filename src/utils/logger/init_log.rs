@@ -14,7 +14,7 @@ pub fn init_logger() -> Result<(), Box<dyn std::error::Error>> {
 
     let local_time = OffsetTime::new(
         ::time::UtcOffset::from_hms(8, 0, 0).unwrap(),
-        ::time::format_description::parse(
+        ::time::format_description::parse_borrowed::<2>(
             "[year]-[month]-[day] [hour]:[minute]:[second].[subsecond digits:3]",
         )
         .unwrap(),

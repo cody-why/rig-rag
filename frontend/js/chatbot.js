@@ -873,15 +873,44 @@ class RigChat {
         if (data !== null) {
             if (eventType === 'user_id') {
                 localStorage.setItem('rig_chat_user_id', data.trim());
+            } else if (eventType === 'status') {
+                this.setStreamStatus(streamMessageId, data.trim());
             } else {
                 if (data === '[DONE]') {
                     this.finalizeStreamMessage(streamMessageId);
                     return;
                 }
+                // 有正文后清掉状态占位
+                this.clearStreamStatus(streamMessageId);
                 // 更新流式消息
                 this.updateStreamMessage(streamMessageId, data.replace(/\[LF\]/g, '\n'));
             }
         }
+    }
+
+    setStreamStatus(messageId, status) {
+        const messageElement = document.getElementById(messageId);
+        if (!messageElement) return;
+        const contentElement = messageElement.querySelector('.stream-content');
+        if (!contentElement || contentElement.dataset.hasContent === '1') return;
+        const labels = {
+            retrieving: '正在检索相关文档...',
+            generating: '正在生成回复...'
+        };
+        contentElement.textContent = labels[status] || status;
+        contentElement.dataset.statusOnly = '1';
+    }
+
+    clearStreamStatus(messageId) {
+        const messageElement = document.getElementById(messageId);
+        if (!messageElement) return;
+        const contentElement = messageElement.querySelector('.stream-content');
+        if (!contentElement) return;
+        if (contentElement.dataset.statusOnly === '1') {
+            contentElement.textContent = '';
+            delete contentElement.dataset.statusOnly;
+        }
+        contentElement.dataset.hasContent = '1';
     }
 
     // 添加流式消息容器
@@ -909,6 +938,11 @@ class RigChat {
         if (messageElement) {
             const contentElement = messageElement.querySelector('.stream-content');
             if (contentElement) {
+                if (contentElement.dataset.statusOnly === '1') {
+                    contentElement.textContent = '';
+                    delete contentElement.dataset.statusOnly;
+                }
+                contentElement.dataset.hasContent = '1';
                 contentElement.textContent += text;
                 // 自动滚动到底部
                 const messagesContainer = document.getElementById('rig-chat-messages');

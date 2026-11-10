@@ -3,7 +3,11 @@ use std::sync::Arc;
 use axum::{
     Router,
     extract::{Json, Path, State},
-    response::sse::{Event, Sse},
+    http::{HeaderMap, HeaderValue, header},
+    response::{
+        IntoResponse, Response,
+        sse::{Event, KeepAlive, Sse},
+    },
     routing::{get, post},
 };
 use futures::StreamExt;
@@ -78,13 +82,14 @@ fn is_meaningless_message(msg: &Message) -> bool {
 
     match msg {
         Message::User { content } => match content.first() {
-            UserContent::Text(text) => is_meaningless(&text.text),
+            Some(UserContent::Text(text)) => is_meaningless(&text.text),
             _ => false,
         },
-        Message::Assistant { content, .. } => match content.first() {
-            AssistantContent::Text(text) => is_meaningless(&text.text),
+        Message::Assistant(assistant) => match assistant.content.first() {
+            Some(AssistantContent::Text(text)) => is_meaningless(&text.text),
             _ => false,
         },
+        Message::System { .. } => false,
     }
 }
 
@@ -272,7 +277,7 @@ pub async fn handle_chat(
 pub async fn handle_stream_chat(
     State((agent, _, conversation_store)): State<ChatAppState>,
     Json(payload): Json<ChatRequest>,
-) -> Sse<impl futures::Stream<Item = Result<Event, axum::Error>>> {
+) -> Response {
     // 从请求中获取用户 ID 或生成一个新的
     let no_id = payload.user_id.is_none();
     let user_id = payload.user_id.unwrap_or_else(generate_user_id);
@@ -296,8 +301,8 @@ pub async fn handle_stream_chat(
     let raw_history = chat_history.read().clone();
     let history_snapshot = filter_meaningless_messages(raw_history);
 
-    // 创建流式响应
-    let (tx, rx) = tokio::sync::mpsc::channel(128);
+    // 创建流式响应（小缓冲，尽快刷出）
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, axum::Error>>(16);
 
     // 在后台任务中处理流
     let user_id_clone = user_id.clone();
@@ -307,22 +312,34 @@ pub async fn handle_stream_chat(
     let agent_clone = agent.clone();
 
     tokio::spawn(async move {
+        // 立刻告知前端已接入，避免代理/UI 长时间空白
+        let _ = tx
+            .send(Ok(Event::default().event("status").data("retrieving")))
+            .await;
+
+        if no_id {
+            let _ = tx
+                .send(Ok(Event::default().event("user_id").data(user_id)))
+                .await;
+        }
+
         match agent_clone
             .stream_chat(&message_clone, history_snapshot)
             .await
         {
             Ok(mut stream) => {
                 let mut full_response = String::with_capacity(2048);
-
-                if no_id {
-                    let _ = tx
-                        .send(Ok(Event::default().event("user_id").data(user_id)))
-                        .await;
-                }
+                let mut started = false;
 
                 while let Some(chunk) = stream.next().await {
+                    if !started {
+                        started = true;
+                        let _ = tx
+                            .send(Ok(Event::default().event("status").data("generating")))
+                            .await;
+                    }
                     full_response.push_str(&chunk);
-                    let chunk = chunk.replace("\n", "[LF]");
+                    let chunk = chunk.replace('\n', "[LF]");
                     let _ = tx.send(Ok(Event::default().data(chunk))).await;
                 }
 
@@ -365,11 +382,27 @@ pub async fn handle_stream_chat(
                 let _ = tx
                     .send(Ok(Event::default().data(format!("Error: {}", e))))
                     .await;
+                let _ = tx.send(Ok(Event::default().data("[DONE]"))).await;
             }
         }
     });
 
-    Sse::new(ReceiverStream::new(rx)).keep_alive(axum::response::sse::KeepAlive::default())
+    let sse = Sse::new(ReceiverStream::new(rx)).keep_alive(
+        KeepAlive::new()
+            .interval(std::time::Duration::from_secs(15))
+            .text("ping"),
+    );
+
+    // 禁止 nginx/CDN 缓冲，否则前端会感觉“不是流式”
+    let mut headers = HeaderMap::new();
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+    headers.insert(
+        header::HeaderName::from_static("x-accel-buffering"),
+        HeaderValue::from_static("no"),
+    );
+    headers.insert(header::CONNECTION, HeaderValue::from_static("keep-alive"));
+
+    (headers, sse).into_response()
 }
 
 pub async fn get_chat_history(
@@ -383,19 +416,20 @@ pub async fn get_chat_history(
             .iter()
             .filter_map(|msg| match msg {
                 Message::User { content } => match content.first() {
-                    UserContent::Text(text) => Some(ChatHistoryItem {
+                    Some(UserContent::Text(text)) => Some(ChatHistoryItem {
                         role: "user".to_string(),
                         content: text.text.clone(),
                     }),
                     _ => None,
                 },
-                Message::Assistant { id: _, content } => match content.first() {
-                    AssistantContent::Text(text) => Some(ChatHistoryItem {
+                Message::Assistant(assistant) => match assistant.content.first() {
+                    Some(AssistantContent::Text(text)) => Some(ChatHistoryItem {
                         role: "assistant".to_string(),
                         content: text.text.clone(),
                     }),
                     _ => None,
                 },
+                Message::System { .. } => None,
             })
             .collect();
 

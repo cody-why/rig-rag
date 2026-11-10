@@ -109,51 +109,49 @@ impl DocumentParser {
             match reader.read_event_into(&mut buf) {
                 Ok(Event::Start(ref e)) => {
                     let name = e.local_name();
-                    let name_bytes = name.as_ref();
+                    let name = name.as_ref();
 
                     // 检测域代码开始
-                    if name_bytes.ends_with(b"fldChar") {
+                    if name.ends_with("fldChar") {
                         // 检查是否是域开始
                         for attr in e.attributes().flatten() {
-                            if attr.key.as_ref().ends_with(b"fldCharType") {
-                                let value = attr.value;
-                                if value.as_ref() == b"begin" {
+                            if attr.key.as_ref().ends_with("fldCharType") {
+                                let value = attr.value.as_ref();
+                                if value == "begin" {
                                     in_field = true;
-                                } else if value.as_ref() == b"end" {
+                                } else if value == "end" {
                                     in_field = false;
                                 }
                             }
                         }
-                    } else if name_bytes.ends_with(b"instrText")
-                        || name_bytes.ends_with(b"fldSimple")
-                    {
+                    } else if name.ends_with("instrText") || name.ends_with("fldSimple") {
                         // 域指令文本或简单域，标记为在域中
                         in_field = true;
-                    } else if name_bytes.ends_with(b"tbl") {
+                    } else if name.ends_with("tbl") {
                         // 表格开始
                         in_table = true;
                         current_table.clear();
-                    } else if name_bytes.ends_with(b"tr") {
+                    } else if name.ends_with("tr") {
                         // 行开始
                         in_row = true;
                         current_row.clear();
-                    } else if name_bytes.ends_with(b"tc") {
+                    } else if name.ends_with("tc") {
                         // 单元格开始
                         in_cell = true;
                         current_cell.clear();
-                    } else if name_bytes.ends_with(b"p") && !in_table {
+                    } else if name.ends_with("p") && !in_table {
                         // 段落开始（非表格内）
                         current_paragraph.clear();
                     }
                 }
                 Ok(Event::End(ref e)) => {
                     let name = e.local_name();
-                    let name_bytes = name.as_ref();
+                    let name = name.as_ref();
 
                     // 域指令文本结束
-                    if name_bytes.ends_with(b"instrText") || name_bytes.ends_with(b"fldSimple") {
+                    if name.ends_with("instrText") || name.ends_with("fldSimple") {
                         in_field = false;
-                    } else if name_bytes.ends_with(b"tbl") {
+                    } else if name.ends_with("tbl") {
                         // 表格结束，转换为 Markdown
                         if !current_table.is_empty() {
                             let markdown_table = Self::table_to_markdown(&current_table);
@@ -161,19 +159,19 @@ impl DocumentParser {
                             result.push(String::new()); // 空行
                         }
                         in_table = false;
-                    } else if name_bytes.ends_with(b"tr") {
+                    } else if name.ends_with("tr") {
                         // 行结束
                         if in_row && !current_row.is_empty() {
                             current_table.push(current_row.clone());
                         }
                         in_row = false;
-                    } else if name_bytes.ends_with(b"tc") {
+                    } else if name.ends_with("tc") {
                         // 单元格结束
                         if in_cell {
                             current_row.push(current_cell.trim().to_string());
                         }
                         in_cell = false;
-                    } else if name_bytes.ends_with(b"p") && !in_table {
+                    } else if name.ends_with("p") && !in_table {
                         // 段落结束（非表格内）
                         if !current_paragraph.is_empty() {
                             let trimmed = current_paragraph.trim();
@@ -190,8 +188,8 @@ impl DocumentParser {
                         continue;
                     }
 
-                    // 使用 Cow 避免不必要的分配
-                    let text = e.decode().unwrap_or_default();
+                    // quick-xml 0.42: xml10_content unescapes entities + normalizes EOLs
+                    let text = e.xml10_content();
 
                     if in_cell {
                         current_cell.push_str(&text);
@@ -457,9 +455,10 @@ impl DocumentParser {
         }
 
         // 2. 使用编码检测器自动检测编码
-        let mut detector = chardetng::EncodingDetector::new();
+        let mut detector =
+            chardetng::EncodingDetector::new(chardetng::Iso2022JpDetection::Allow);
         detector.feed(data, true);
-        let encoding = detector.guess(None, true);
+        let encoding = detector.guess(None, chardetng::Utf8Detection::Allow);
 
         info!("检测到的编码: {}", encoding.name());
 

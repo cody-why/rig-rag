@@ -1,4 +1,4 @@
-use std::{collections::HashMap, marker::PhantomData, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -11,18 +11,22 @@ use qdrant_client::{
     },
 };
 use rig::{
-    Embed,
-    embeddings::{EmbeddingModel, EmbeddingsBuilder},
+    DynModel, Embed,
+    embeddings::EmbeddingsBuilder,
+    operation::Embedding as EmbeddingOp,
+    qdrant::{QdrantFilter, QdrantVectorStore},
     vector_store::{
         InsertDocuments, VectorStoreError, VectorStoreIndex,
-        request::{Filter as RigFilter, VectorSearchRequest},
+        request::{VectorSearchRequest, DynamicSearchFilter},
     },
 };
-use rig_qdrant::QdrantVectorStore;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tracing::{debug, info, warn};
 
 use crate::config::QdrantConfig;
+
+/// Erased embedding model handle used across the app.
+pub type EmbeddingHandle = DynModel<EmbeddingOp>;
 
 /// 文档结构
 #[derive(Debug, Clone, Serialize, Deserialize, Embed, PartialEq)]
@@ -59,67 +63,55 @@ impl Document {
 }
 
 #[derive(Clone)]
-pub struct SerializableQdrantVectorStore<M: EmbeddingModel> {
-    inner: Arc<QdrantVectorStore<M>>,
+pub struct SerializableQdrantVectorStore {
+    inner: Arc<QdrantVectorStore>,
 }
 
-impl<M: EmbeddingModel> SerializableQdrantVectorStore<M> {
-    pub fn new(inner: QdrantVectorStore<M>) -> Self {
+impl SerializableQdrantVectorStore {
+    pub fn new(inner: QdrantVectorStore) -> Self {
         Self {
             inner: Arc::new(inner),
         }
     }
 
-    pub fn inner(&self) -> Arc<QdrantVectorStore<M>> {
+    pub fn inner(&self) -> Arc<QdrantVectorStore> {
         Arc::clone(&self.inner)
     }
 }
 
-impl<M> VectorStoreIndex for SerializableQdrantVectorStore<M>
-where
-    M: EmbeddingModel + Send + Sync + 'static,
-{
-    type Filter = RigFilter<serde_json::Value>;
+impl VectorStoreIndex for SerializableQdrantVectorStore {
+    type Filter = QdrantFilter;
 
-    fn top_n<T: for<'a> Deserialize<'a> + Send>(
+    fn top_n<T: DeserializeOwned + Send>(
         &self,
         req: VectorSearchRequest<Self::Filter>,
-    ) -> impl std::future::Future<Output = Result<Vec<(f64, String, T)>, VectorStoreError>> + Send
-    {
+    ) -> impl std::future::Future<
+        Output = Result<Vec<rig::vector_store::VectorSearchResult<T>>, VectorStoreError>,
+    > + Send {
         let inner = self.inner();
-        async move {
-            type StoreFilter<M> = <QdrantVectorStore<M> as VectorStoreIndex>::Filter;
-            let mapped = req.map_filter(|filter| filter.interpret::<StoreFilter<M>>());
-            inner.top_n::<T>(mapped).await
-        }
+        async move { inner.top_n::<T>(req).await }
     }
 
     fn top_n_ids(
         &self,
         req: VectorSearchRequest<Self::Filter>,
-    ) -> impl std::future::Future<Output = Result<Vec<(f64, String)>, VectorStoreError>> + Send
-    {
+    ) -> impl std::future::Future<
+        Output = Result<Vec<rig::vector_store::VectorSearchIdResult>, VectorStoreError>,
+    > + Send {
         let inner = self.inner();
-        async move {
-            type StoreFilter<M> = <QdrantVectorStore<M> as VectorStoreIndex>::Filter;
-            let mapped = req.map_filter(|filter| filter.interpret::<StoreFilter<M>>());
-            inner.top_n_ids(mapped).await
-        }
+        async move { inner.top_n_ids(req).await }
     }
 }
 
 /// Qdrant 文档存储
-pub struct DocumentStore<M: EmbeddingModel> {
+#[derive(Clone)]
+pub struct DocumentStore {
     config: QdrantConfig,
-    _phantom: PhantomData<M>,
 }
 
-impl<M: EmbeddingModel + Send + Sync + 'static> DocumentStore<M> {
+impl DocumentStore {
     pub fn new(config: QdrantConfig) -> Self {
-        Self {
-            config,
-            _phantom: PhantomData,
-        }
+        Self { config }
     }
 
     pub fn with_config(config: &QdrantConfig) -> Self {
@@ -211,7 +203,7 @@ impl<M: EmbeddingModel + Send + Sync + 'static> DocumentStore<M> {
             .unwrap_or_default())
     }
 
-    fn build_vector_store(&self, client: Qdrant, model: M) -> QdrantVectorStore<M> {
+    fn build_vector_store(&self, client: Qdrant, model: EmbeddingHandle) -> QdrantVectorStore {
         let query_params = QueryPointsBuilder::new(&self.config.collection_name)
             .with_payload(true)
             .with_vectors(false)
@@ -238,42 +230,39 @@ impl<M: EmbeddingModel + Send + Sync + 'static> DocumentStore<M> {
 
     pub async fn create_vector_index(
         &self,
-        embedding_model: M,
-    ) -> Result<(SerializableQdrantVectorStore<M>, usize)>
-    where
-        M: Clone + Send + Sync + 'static,
-    {
+        embedding_model: EmbeddingHandle,
+    ) -> Result<SerializableQdrantVectorStore> {
         let client = self.client()?;
-        self.ensure_collection(&client, embedding_model.ndims())
+        self.ensure_collection(&client, self.config.vector_size)
             .await?;
 
-        let vector_store = self.build_vector_store(client.clone(), embedding_model);
-        let wrapped = SerializableQdrantVectorStore::new(vector_store);
-        let total = self.collection_count(&client).await?;
-
-        Ok((wrapped, total))
+        let vector_store = self.build_vector_store(client, embedding_model);
+        Ok(SerializableQdrantVectorStore::new(vector_store))
     }
 
     pub async fn search(
         &self,
-        vector_index: &SerializableQdrantVectorStore<M>,
+        vector_index: &SerializableQdrantVectorStore,
         query: &str,
         limit: usize,
     ) -> Result<Vec<(f64, Document)>> {
         let req = VectorSearchRequest::builder()
             .query(query)
             .samples(limit as u64)
-            .build()
-            .context("Failed to build vector search request")?;
+            .build();
 
-        let results: Vec<(f64, String, Document)> =
-            <SerializableQdrantVectorStore<M> as VectorStoreIndex>::top_n(vector_index, req)
-                .await
-                .context("Vector search on Qdrant failed")?;
+        let mapped = req.map_filter(|filter| {
+            QdrantFilter::from_dynamic_filter(filter).expect("canonical filter maps to QdrantFilter")
+        });
+
+        let results = vector_index
+            .top_n::<Document>(mapped)
+            .await
+            .context("Vector search on Qdrant failed")?;
 
         Ok(results
             .into_iter()
-            .map(|(score, _, doc)| (score, doc))
+            .map(|hit| (hit.score, hit.document))
             .collect())
     }
 
@@ -289,18 +278,15 @@ impl<M: EmbeddingModel + Send + Sync + 'static> DocumentStore<M> {
     pub async fn add_documents_with_embeddings(
         &self,
         documents: Vec<Document>,
-        embedding_model: M,
-    ) -> Result<()>
-    where
-        M: Clone + Send + Sync + 'static,
-    {
+        embedding_model: EmbeddingHandle,
+    ) -> Result<()> {
         if documents.is_empty() {
             debug!("No documents to add to Qdrant, skipping");
             return Ok(());
         }
 
         let client = self.client()?;
-        self.ensure_collection(&client, embedding_model.ndims())
+        self.ensure_collection(&client, self.config.vector_size)
             .await?;
 
         let vector_store = self.build_vector_store(client, embedding_model.clone());

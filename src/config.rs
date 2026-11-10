@@ -55,6 +55,12 @@ pub struct AppConfig {
     pub preamble_file: String,
     pub temperature: f64,
     pub documents_dir: String,
+    /// 相对 DOCUMENTS_DIR 排除的目录（名称或相对路径，逗号分隔）
+    pub documents_exclude_dirs: Vec<String>,
+    /// 轮询 DOCUMENTS_DIR 变更的间隔（秒），最小 5
+    pub documents_sync_interval_secs: u64,
+    /// RAG 每次检索注入的文档切片数（dynamic_context top_k）
+    pub rag_top_k: usize,
     pub openai_api_key: String,
     pub openai_base_url: String,
     pub openai_model: String,
@@ -79,6 +85,19 @@ impl AppConfig {
                 .unwrap_or(0.7),
             documents_dir: env::var("DOCUMENTS_DIR")
                 .unwrap_or_else(|_| "data/documents".to_string()),
+            documents_exclude_dirs: parse_csv_list(
+                &env::var("DOCUMENTS_EXCLUDE_DIRS").unwrap_or_default(),
+            ),
+            documents_sync_interval_secs: env::var("DOCUMENTS_SYNC_INTERVAL_SECS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(30)
+                .max(5),
+            rag_top_k: env::var("RAG_TOP_K")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(5)
+                .max(1),
             openai_api_key: openai_api_key.clone(),
             openai_base_url: openai_base_url.clone(),
             openai_model: env::var("OPENAI_MODEL").expect("OPENAI_MODEL must be set"),
@@ -90,4 +109,11 @@ impl AppConfig {
                 .unwrap_or_else(|_| "text-embedding-ada-002".to_string()),
         }
     }
+}
+
+fn parse_csv_list(raw: &str) -> Vec<String> {
+    raw.split([',', ';'])
+        .map(|s| s.trim().trim_matches('/').replace('\\', "/"))
+        .filter(|s| !s.is_empty())
+        .collect()
 }

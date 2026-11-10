@@ -1,14 +1,14 @@
 use std::sync::atomic::AtomicPtr;
 
 use parking_lot::RwLock;
-use rig::prelude::EmbeddingsClient;
-use rig::providers::openai::Client;
+use rig::providers::openai::{OpenAI, OpenAIConfig};
 use tracing::info;
 
 use super::rig_agent::RigAgent;
 use crate::{
     agent::rig_agent::{RigAgentContext, load_preamble},
     config::AppConfig,
+    db::EmbeddingHandle,
 };
 pub struct RigAgentBuilder {
     config: AppConfig,
@@ -58,6 +58,9 @@ impl RigAgentBuilder {
             preamble_file: self.config.preamble_file.clone(),
             needs_rebuild: false,
             preamble: load_preamble(&self.config.preamble_file),
+            documents_dir: self.config.documents_dir.clone(),
+            documents_exclude_dirs: self.config.documents_exclude_dirs.clone(),
+            rag_top_k: self.config.rag_top_k,
         };
 
         let rag_agent = match context.build().await {
@@ -85,17 +88,19 @@ impl RigAgentBuilder {
     }
 
     /// 初始化OpenAI客户端
-    fn init_openai_client(&self) -> rig::providers::openai::Client {
-        Client::builder(&self.config.openai_api_key)
-            .base_url(&self.config.openai_base_url)
-            .build()
+    fn init_openai_client(&self) -> OpenAI {
+        OpenAIConfig::new(&self.config.openai_api_key)
+            .with_base_url(&self.config.openai_base_url)
+            .client()
     }
 
-    fn init_embedding_client(&self) -> rig::providers::openai::EmbeddingModel {
-        let embedding_client = Client::builder(&self.config.embedding_api_key)
-            .base_url(&self.config.embedding_url)
-            .build();
+    fn init_embedding_client(&self) -> EmbeddingHandle {
+        let embedding_client = OpenAIConfig::new(&self.config.embedding_api_key)
+            .with_base_url(&self.config.embedding_url)
+            .client();
 
-        embedding_client.embedding_model(&self.config.embedding_model)
+        embedding_client
+            .embedding(&self.config.embedding_model, None)
+            .erase()
     }
 }
