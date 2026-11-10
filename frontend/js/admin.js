@@ -11,6 +11,7 @@ let currentDocumentId = null;
 let currentPage = 0;
 let pageSize = 20;
 let totalDocuments = 0;
+let documentSearchQuery = '';
 
 // 获取认证headers
 function getAuthHeaders() {
@@ -262,6 +263,24 @@ function showSecretKeyModal(callback) {
 }
 
 // 加载文档列表
+/** 刷新文档列表并尽量停留在当前页；删除后若本页已空则回退一页 */
+async function reloadDocumentsKeepingPage(removedCount = 0) {
+    let page = currentPage;
+    if (removedCount > 0) {
+        const remaining = Math.max(0, totalDocuments - removedCount);
+        const maxPage = Math.max(0, Math.ceil(remaining / pageSize) - 1);
+        page = Math.min(page, maxPage);
+    }
+    await loadDocuments(page);
+}
+
+function searchDocuments() {
+    const input = document.getElementById('documentSearch');
+    documentSearchQuery = (input?.value || '').trim();
+    currentPage = 0;
+    loadDocuments(0);
+}
+
 async function loadDocuments(page = 0) {
     const loading = document.getElementById('documentsLoading');
     const container = document.getElementById('documentsList');
@@ -273,7 +292,11 @@ async function loadDocuments(page = 0) {
     
     try {
         const offset = page * pageSize;
-        const response = await fetch(`${API_BASE}/api/documents?limit=${pageSize}&offset=${offset}`, {
+        let url = `${API_BASE}/api/documents?limit=${pageSize}&offset=${offset}`;
+        if (documentSearchQuery) {
+            url += `&search=${encodeURIComponent(documentSearchQuery)}`;
+        }
+        const response = await fetch(url, {
             headers: getAuthHeaders(),
         });
         if (!response.ok) {
@@ -286,9 +309,18 @@ async function loadDocuments(page = 0) {
         // 更新分页状态
         currentPage = page;
         totalDocuments = data.total;
+
+        // 当前页越界（例如删光后页码偏大）时回退
+        const maxPage = Math.max(0, Math.ceil(totalDocuments / pageSize) - 1);
+        if (totalDocuments > 0 && currentPage > maxPage) {
+            await loadDocuments(maxPage);
+            return;
+        }
         
         if (data.documents.length === 0) {
-            container.innerHTML = '<p style="text-align: center; color: #6c757d; padding: 40px;">暂无文档，请先上传一些文档。</p>';
+            container.innerHTML = documentSearchQuery
+                ? `<p style="text-align: center; color: #6c757d; padding: 40px;">未找到匹配「${escapeHtml(documentSearchQuery)}」的文档。</p>`
+                : '<p style="text-align: center; color: #6c757d; padding: 40px;">暂无文档，请先上传一些文档。</p>';
             return;
         }
         
@@ -316,44 +348,60 @@ function createDocumentElement(doc) {
     const updatedAt = new Date(doc.updated_at).toLocaleString('zh-CN');
     const filename = doc.filename || '';
     const displayName =
-        filename.length > 120 ? `${filename.slice(0, 117)}...` : filename;
+        filename.length > 80 ? `${filename.slice(0, 77)}...` : filename;
 
     const title = document.createElement('h3');
     title.textContent = displayName;
     title.title = filename;
     div.appendChild(title);
 
+    const previewText = doc.preview || '';
+    const preview = document.createElement('p');
+    preview.textContent =
+        previewText.length > 100 ? `${previewText.slice(0, 97)}...` : previewText;
+    preview.title = previewText;
+    div.appendChild(preview);
+
     const meta = document.createElement('div');
     meta.className = 'document-meta';
-    meta.textContent = `📅 创建时间: ${createdAt} | 🔄 更新时间: ${updatedAt}`;
+    meta.textContent = updatedAt;
+    meta.title = `创建: ${createdAt} | 更新: ${updatedAt}`;
     div.appendChild(meta);
-
-    const preview = document.createElement('p');
-    preview.textContent = doc.preview || '';
-    div.appendChild(preview);
 
     const actions = document.createElement('div');
     actions.className = 'document-actions';
 
-    const editBtn = document.createElement('button');
-    editBtn.className = 'btn btn-primary';
-    editBtn.textContent = '✏️ 编辑';
-    editBtn.addEventListener('click', () => editDocument(doc.id));
-
     const viewBtn = document.createElement('button');
     viewBtn.className = 'btn btn-secondary';
-    viewBtn.textContent = '👁️ 查看';
+    viewBtn.textContent = '查看';
+    viewBtn.title = '查看';
     viewBtn.addEventListener('click', () => viewDocument(doc.id));
+
+    const editBtn = document.createElement('button');
+    editBtn.className = 'btn btn-primary';
+    editBtn.textContent = '编辑';
+    editBtn.title = '编辑';
+    editBtn.addEventListener('click', () => editDocument(doc.id));
 
     const deleteBtn = document.createElement('button');
     deleteBtn.className = 'btn btn-danger';
-    deleteBtn.textContent = '🗑️ 删除';
+    deleteBtn.textContent = '删除';
+    deleteBtn.title = '删除';
     deleteBtn.addEventListener('click', () => deleteDocument(doc.id, filename));
 
-    actions.append(editBtn, viewBtn, deleteBtn);
+    actions.append(viewBtn, editBtn, deleteBtn);
     div.appendChild(actions);
 
     return div;
+}
+
+/** 解析页码输入（1-based），非法则返回 null */
+function parseJumpPage(raw, totalPages) {
+    const page = parseInt(String(raw ?? '').trim(), 10);
+    if (!Number.isFinite(page) || page < 1 || page > totalPages) {
+        return null;
+    }
+    return page;
 }
 
 // 更新分页控件
@@ -362,6 +410,7 @@ function updatePaginationControls() {
     const prevBtn = document.getElementById('prevPage');
     const nextBtn = document.getElementById('nextPage');
     const pageInfo = document.getElementById('pageInfo');
+    const jumpInput = document.getElementById('docJumpPage');
     
     if (totalDocuments <= pageSize) {
         pagination.style.display = 'none';
@@ -373,10 +422,15 @@ function updatePaginationControls() {
     const totalPages = Math.ceil(totalDocuments / pageSize);
     const currentPageNum = currentPage + 1;
     
-    pageInfo.textContent = `第 ${currentPageNum} 页，共 ${totalPages} 页 (${totalDocuments} 个文档)`;
+    pageInfo.textContent = `第 ${currentPageNum}/${totalPages} 页 (${totalDocuments} 个文档)`;
     
     prevBtn.disabled = currentPage === 0;
     nextBtn.disabled = currentPage >= totalPages - 1;
+    if (jumpInput) {
+        jumpInput.max = totalPages;
+        jumpInput.value = currentPageNum;
+        jumpInput.placeholder = `1-${totalPages}`;
+    }
 }
 
 // 上一页
@@ -392,6 +446,16 @@ function goToNextPage() {
     if (currentPage < totalPages - 1) {
         loadDocuments(currentPage + 1);
     }
+}
+
+function jumpToDocumentPage() {
+    const totalPages = Math.max(1, Math.ceil(totalDocuments / pageSize) || 1);
+    const page = parseJumpPage(document.getElementById('docJumpPage')?.value, totalPages);
+    if (page === null) {
+        showAlert(`请输入 1-${totalPages} 之间的页码`, 'error');
+        return;
+    }
+    loadDocuments(page - 1);
 }
 
 // 编辑文档
@@ -494,7 +558,7 @@ function createEditModal(doc) {
             
             showAlert('文档更新成功！');
             modal.remove();
-            loadDocuments(); // 重新加载文档列表
+            await reloadDocumentsKeepingPage();
             
         } catch (error) {
             showAlert(error.message, 'error');
@@ -595,7 +659,7 @@ async function deleteDocument(id, filename) {
         }
         
         showAlert('文档删除成功！');
-        loadDocuments(); 
+        await reloadDocumentsKeepingPage(1);
         
     } catch (error) {
         showAlert(error.message, 'error');
@@ -1201,6 +1265,20 @@ document.addEventListener('DOMContentLoaded', async function() {
     // 绑定分页按钮事件
     document.getElementById('prevPage').addEventListener('click', goToPreviousPage);
     document.getElementById('nextPage').addEventListener('click', goToNextPage);
+    document.getElementById('docJumpBtn')?.addEventListener('click', jumpToDocumentPage);
+    document.getElementById('docJumpPage')?.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            jumpToDocumentPage();
+        }
+    });
+    document.getElementById('conversationJumpBtn')?.addEventListener('click', jumpToConversationPage);
+    document.getElementById('conversationJumpPage')?.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            jumpToConversationPage();
+        }
+    });
     
     // 设置文件拖拽功能
     setupFileDragAndDrop();
@@ -1221,7 +1299,8 @@ let conversationTotal = 0;
 let conversationSearchQuery = '';
 // 消息分页状态
 let messageCurrentPage = 0;
-let messagePageSize = 50;
+let messagePageSize = 20;
+let messageTotal = 0;
 
 // 加载对话记录
 async function loadConversations() {
@@ -1306,7 +1385,28 @@ function updateConversationStats(stats) {
     document.getElementById('todayConversations').textContent = stats.today_conversations || 0;
 }
 
-// 显示对话列表
+function getConversationClientIp(conv) {
+    const ip = conv?.metadata?.client_ip;
+    return typeof ip === 'string' && ip.trim() ? ip.trim() : '-';
+}
+
+function getConversationSource(conv) {
+    const source = conv?.metadata?.source;
+    return typeof source === 'string' && source.trim() ? source.trim() : '-';
+}
+
+function shortenSource(source) {
+    if (!source || source === '-') return '-';
+    try {
+        const url = new URL(source);
+        const path = `${url.host}${url.pathname}`.replace(/\/$/, '');
+        return path.length > 40 ? `${path.slice(0, 37)}...` : path;
+    } catch {
+        return source.length > 40 ? `${source.slice(0, 37)}...` : source;
+    }
+}
+
+// 显示对话列表（紧凑行，单屏显示更多）
 function displayConversations(conversations) {
     const conversationsList = document.getElementById('conversationsList');
     
@@ -1318,41 +1418,35 @@ function displayConversations(conversations) {
         `;
         return;
     }
-    
-    conversationsList.innerHTML = conversations.map(conv => `
-        <div class="document-item" style="border-left-color: ${getConversationStatusColor(conv.status)};">
-            <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 10px;">
-                <h3 style="margin: 0; color: #495057;">对话 #${conv.id.substring(0, 8)}...</h3>
-                <span class="badge" style="background-color: ${getConversationStatusColor(conv.status)}; color: white; padding: 4px 8px; border-radius: 4px; font-size: 0.8rem;">
-                    ${getConversationStatusText(conv.status)}
-                </span>
-            </div>
-            
-            <div class="document-meta">
-                <strong>用户ID:</strong> ${conv.user_id}<br>
-                <strong>创建时间:</strong> ${formatDateTime(conv.created_at)}<br>
-                <strong>最后消息:</strong> ${conv.updated_at ? formatDateTime(conv.updated_at) : '无'}<br>
-                ${conv.title ? `<strong>标题:</strong> ${conv.title}<br>` : ''}
-            </div>
-            
-            <div class="document-actions">
-                <button class="btn btn-primary" onclick="viewConversationDetails('${conv.id}')">
-                    👁️ 查看详情
-                </button>
-                <button class="btn btn-secondary" onclick="viewConversationMessages('${conv.id}')">
-                    💬 查看消息
-                </button>
+
+    conversationsList.innerHTML = conversations.map(conv => {
+        const statusColor = getConversationStatusColor(conv.status);
+        const clientIp = getConversationClientIp(conv);
+        const source = getConversationSource(conv);
+        const sourceShort = shortenSource(source);
+        const updatedAt = conv.updated_at ? formatDateTime(conv.updated_at) : '-';
+        const userId = conv.user_id || '-';
+        const firstQ = (conv.first_question || '').trim() || '-';
+        const firstQShort = firstQ.length > 60 ? `${firstQ.slice(0, 57)}...` : firstQ;
+
+        return `
+        <div class="conversation-row" style="border-left-color: ${statusColor};">
+            <span class="badge" style="background-color: ${statusColor};">${getConversationStatusText(conv.status)}</span>
+            <span class="cell" title="${escapeHtml(userId)}">${escapeHtml(userId)}</span>
+            <span class="cell cell-question" title="${escapeHtml(firstQ)}">${escapeHtml(firstQShort)}</span>
+            <span class="cell cell-muted cell-source" title="${escapeHtml(source)}">${escapeHtml(sourceShort)}</span>
+            <span class="cell cell-muted cell-ip" title="IP">${escapeHtml(clientIp)}</span>
+            <span class="cell cell-muted cell-time" title="最后消息">${escapeHtml(updatedAt)}</span>
+            <div class="conv-actions">
+                <button class="btn btn-secondary" onclick="viewConversationMessages('${conv.id}')" title="查看消息">💬</button>
+                <button class="btn btn-primary" onclick="viewConversationDetails('${conv.id}')" title="详情">详情</button>
                 ${conv.status === 'active' ? `
-                    <button class="btn btn-warning" onclick="closeConversation('${conv.id}')">
-                        🔒 关闭对话
-                    </button>
+                    <button class="btn btn-warning" onclick="closeConversation('${conv.id}')" title="关闭">关闭</button>
                 ` : ''}
-                <button class="btn btn-danger" onclick="deleteConversation('${conv.id}')">
-                    🗑️ 删除
-                </button>
+                <button class="btn btn-danger" onclick="deleteConversation('${conv.id}')" title="删除">删除</button>
             </div>
-        </div>
-    `).join('');
+        </div>`;
+    }).join('');
 }
 
 // 获取对话状态颜色
@@ -1409,17 +1503,21 @@ async function viewConversationDetails(conversationId) {
             align-items: center; justify-content: center;
         `;
         
+        const clientIp = getConversationClientIp(conversation);
+        const source = getConversationSource(conversation);
         modal.innerHTML = `
             <div style="background: white; padding: 20px; border-radius: 10px; max-width: 600px; width: 90%; max-height: 80%; overflow-y: auto;">
                 <h3>对话详情</h3>
-                <div style="margin-bottom: 15px;">
-                    <strong>对话ID:</strong> ${conversation.id}<br>
-                    <strong>用户ID:</strong> ${conversation.user_id}<br>
+                <div style="margin-bottom: 15px; word-break: break-all;">
+                    <strong>对话ID:</strong> ${escapeHtml(conversation.id)}<br>
+                    <strong>用户ID:</strong> ${escapeHtml(conversation.user_id)}<br>
+                    <strong>客户端IP:</strong> ${escapeHtml(clientIp)}<br>
+                    <strong>来源:</strong> ${escapeHtml(source)}<br>
                     <strong>状态:</strong> ${getConversationStatusText(conversation.status)}<br>
                     <strong>创建时间:</strong> ${formatDateTime(conversation.created_at)}<br>
                     <strong>更新时间:</strong> ${formatDateTime(conversation.updated_at)}<br>
-                    ${conversation.title ? `<strong>标题:</strong> ${conversation.title}<br>` : ''}
-                    ${conversation.metadata ? `<strong>元数据:</strong> <pre style="background: #f8f9fa; padding: 10px; border-radius: 5px; overflow-x: auto;">${JSON.stringify(conversation.metadata, null, 2)}</pre>` : ''}
+                    ${conversation.title ? `<strong>标题:</strong> ${escapeHtml(conversation.title)}<br>` : ''}
+                    ${conversation.metadata ? `<strong>元数据:</strong> <pre style="background: #f8f9fa; padding: 10px; border-radius: 5px; overflow-x: auto;">${escapeHtml(JSON.stringify(conversation.metadata, null, 2))}</pre>` : ''}
                 </div>
                 <div style="text-align: right;">
                     <button class="btn btn-secondary" onclick="this.closest('.modal').remove()">关闭</button>
@@ -1443,91 +1541,143 @@ async function viewConversationDetails(conversationId) {
     }
 }
 
-// 查看对话消息
+// 查看对话消息（默认第 1 页）
 async function viewConversationMessages(conversationId) {
     messageCurrentPage = 0;
+    messageTotal = 0;
     await loadConversationMessages(conversationId, 0);
 }
 
-// 加载消息的分页函数
+// 加载消息分页
 async function loadConversationMessages(conversationId, page) {
     try {
-        const offset = page * messagePageSize;
-        const response = await fetch(`/api/conversation/${conversationId}/messages?limit=${messagePageSize}&offset=${offset}`, {
-            headers: getAuthHeaders()
-        });
-        
+        const targetPage = Math.max(0, page ?? 0);
+        const offset = targetPage * messagePageSize;
+        const response = await fetch(
+            `/api/conversation/${conversationId}/messages?limit=${messagePageSize}&offset=${offset}`,
+            { headers: getAuthHeaders() }
+        );
+
         if (!response.ok) {
             throw new Error(`HTTP error! status: ${response.status}`);
         }
-        
-        const messages = await response.json();
-        messageCurrentPage = page;
-        const hasMore = messages.length === messagePageSize;
-        
-        let modal = document.getElementById('conversationMessagesModal');
-        if (!modal) {
-            modal = document.createElement('div');
-            modal.id = 'conversationMessagesModal';
-            modal.style.cssText = `
-                position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-                background: rgba(0,0,0,0.5); z-index: 1000; display: flex;
-                align-items: center; justify-content: center;
-            `;
-            document.body.appendChild(modal);
-            modal.addEventListener('click', (e) => {
-                if (e.target === modal) modal.remove();
-            });
-        }
-        
-        const messagesHtml = messages.length > 0 ? messages.map(msg => `
-            <div style="margin-bottom: 15px; padding: 10px; border-radius: 5px; background: ${msg.role === 'user' ? '#e3f2fd' : '#f5f5f5'};">
-                <div style="font-weight: bold; margin-bottom: 5px; color: ${msg.role === 'user' ? '#1976d2' : '#666'};">
-                    ${msg.role === 'user' ? '👤 用户' : '🤖 助手'} - ${formatDateTime(msg.created_at)}
-                </div>
-                <div style="white-space: pre-wrap;">${escapeHtml(msg.content)}</div>
-                ${msg.metadata ? `<div style="font-size: 0.8rem; color: #666; margin-top: 5px;">元数据: ${escapeHtml(JSON.stringify(msg.metadata))}</div>` : ''}
-            </div>
-        `).join('') : '<p style="text-align: center; color: #666;">暂无消息</p>';
-        
-        const paginationHtml = messages.length > 0 ? `
-            <div style="display: flex; justify-content: center; align-items: center; gap: 10px; margin-top: 15px;">
-                <button class="btn btn-secondary" id="messagePrevPage" style="padding: 8px 16px; font-size: 0.9rem;${page === 0 ? 'visibility: hidden;' : ''}">⬅️ 上一页</button>
-                <span style="color: #6c757d; font-size: 1.0rem;">第 ${page + 1} 页</span>
-                <button class="btn btn-secondary" id="messageNextPage"  style="padding: 8px 16px; font-size: 0.9rem; ${!hasMore ? 'visibility: hidden;' : ''}">下一页 ➡️</button>
-            </div>
-        ` : '';
-        
-        modal.innerHTML = `
-            <div style="background: white; padding: 20px; border-radius: 10px; max-width: 900px; width: 90%; max-height: 85%; overflow-y: auto; position: relative;">
-                <button style="position: absolute; top: 10px; right: 10px; background: rgba(0,0,0,0.7); color: white; border: none; border-radius: 50%; width: 32px; height: 32px; cursor: pointer; z-index: 1001;" onclick="document.getElementById('conversationMessagesModal').remove()">❌</button>
-                <h3 style="margin-bottom: 15px;">💬 对话消息历史</h3>
-                <div style="max-height: 500px; overflow-y: auto; border: 1px solid #ddd; padding: 15px; border-radius: 5px; background: #fafafa;">
-                    ${messagesHtml}
-                </div>
-                ${paginationHtml}
-                
-            </div>
-        `;
-        
-        const prevBtn = modal.querySelector('#messagePrevPage');
-        const nextBtn = modal.querySelector('#messageNextPage');
-        
-        if (prevBtn) {
-            prevBtn.onclick = () => {
-                if (messageCurrentPage > 0) loadConversationMessages(conversationId, messageCurrentPage - 1);
-            };
-        }
-        
-        if (nextBtn) {
-            nextBtn.onclick = () => {
-                if (hasMore) loadConversationMessages(conversationId, messageCurrentPage + 1);
-            };
-        }
-        
+
+        const data = await response.json();
+        const messages = Array.isArray(data) ? data : (data.messages || []);
+        messageTotal = Array.isArray(data) ? messages.length : (data.total ?? 0);
+        const hasMore = Array.isArray(data)
+            ? messages.length === messagePageSize
+            : !!data.has_more;
+
+        renderConversationMessagesModal(conversationId, targetPage, messages, messageTotal, hasMore);
     } catch (error) {
         console.error('Error viewing conversation messages:', error);
         showAlert('查看对话消息失败: ' + error.message, 'error');
+    }
+}
+
+function renderConversationMessagesModal(conversationId, page, messages, total, hasMore) {
+    messageCurrentPage = page;
+    messageTotal = total;
+    const totalPages = Math.max(1, Math.ceil(total / messagePageSize) || 1);
+
+    let modal = document.getElementById('conversationMessagesModal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'conversationMessagesModal';
+        modal.style.cssText = `
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.5); z-index: 1000; display: flex;
+            align-items: center; justify-content: center;
+        `;
+        document.body.appendChild(modal);
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) modal.remove();
+        });
+    }
+
+    const messagesHtml = messages.length > 0 ? messages.map(msg => {
+        const msgIp = msg?.metadata?.client_ip;
+        const msgSource = msg?.metadata?.source;
+        const ipLabel = typeof msgIp === 'string' && msgIp.trim()
+            ? ` · IP ${escapeHtml(msgIp.trim())}`
+            : '';
+        const sourceLabel = typeof msgSource === 'string' && msgSource.trim()
+            ? ` · ${escapeHtml(shortenSource(msgSource.trim()))}`
+            : '';
+        return `
+        <div style="margin-bottom: 12px; padding: 10px; border-radius: 5px; background: ${msg.role === 'user' ? '#e3f2fd' : '#f5f5f5'}; overflow: hidden;">
+            <div style="font-weight: bold; margin-bottom: 5px; color: ${msg.role === 'user' ? '#1976d2' : '#666'}; font-size: 0.85rem;">
+                ${msg.role === 'user' ? '👤 用户' : '🤖 助手'} · ${formatDateTime(msg.created_at)}${ipLabel}${sourceLabel}
+            </div>
+            <div style="white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere;">${escapeHtml(msg.content)}</div>
+        </div>`;
+    }).join('') : '<p style="text-align: center; color: #666;">暂无消息</p>';
+
+    const start = total === 0 ? 0 : page * messagePageSize + 1;
+    const end = Math.min((page + 1) * messagePageSize, total);
+    const showPager = total > messagePageSize;
+    const paginationHtml = total > 0 ? `
+        <div style="display: flex; justify-content: center; align-items: center; gap: 10px; margin-top: 15px; flex-wrap: wrap;">
+            <button class="btn btn-secondary" id="messagePrevPage" style="padding: 6px 12px; font-size: 0.85rem;${page === 0 ? 'visibility: hidden;' : ''}">⬅️ 上一页</button>
+            <span style="color: #6c757d; font-size: 0.9rem;">第 ${page + 1}/${totalPages} 页 · ${start}-${end}/${total}</span>
+            <button class="btn btn-secondary" id="messageNextPage" style="padding: 6px 12px; font-size: 0.85rem;${page >= totalPages - 1 ? 'visibility: hidden;' : ''}">下一页 ➡️</button>
+            ${showPager ? `
+            <span style="display: inline-flex; align-items: center; gap: 6px; color: #6c757d; font-size: 0.85rem;">
+                跳至
+                <input type="number" id="messageJumpPage" min="1" max="${totalPages}" value="${page + 1}" placeholder="1-${totalPages}" style="width: 64px; height: 30px; padding: 0 6px; border: 1px solid #ced4da; border-radius: 6px; text-align: center;">
+                页
+                <button class="btn btn-secondary" id="messageJumpBtn" style="padding: 6px 12px; margin: 0; font-size: 0.85rem;">跳转</button>
+            </span>` : ''}
+        </div>
+    ` : '';
+
+    modal.innerHTML = `
+        <div style="background: white; padding: 20px; border-radius: 10px; max-width: 900px; width: 90%; max-height: 85%; overflow-y: auto; position: relative;">
+            <button style="position: absolute; top: 10px; right: 10px; background: rgba(0,0,0,0.7); color: white; border: none; border-radius: 50%; width: 32px; height: 32px; cursor: pointer; z-index: 1001;" onclick="document.getElementById('conversationMessagesModal').remove()">❌</button>
+            <h3 style="margin-bottom: 15px;">💬 对话消息历史</h3>
+            <div style="max-height: 500px; overflow-y: auto; border: 1px solid #ddd; padding: 15px; border-radius: 5px; background: #fafafa;">
+                ${messagesHtml}
+            </div>
+            ${paginationHtml}
+        </div>
+    `;
+
+    const prevBtn = modal.querySelector('#messagePrevPage');
+    const nextBtn = modal.querySelector('#messageNextPage');
+    const jumpBtn = modal.querySelector('#messageJumpBtn');
+    const jumpInput = modal.querySelector('#messageJumpPage');
+
+    if (prevBtn) {
+        prevBtn.onclick = () => {
+            if (messageCurrentPage > 0) loadConversationMessages(conversationId, messageCurrentPage - 1);
+        };
+    }
+
+    if (nextBtn) {
+        nextBtn.onclick = () => {
+            if (messageCurrentPage < totalPages - 1) {
+                loadConversationMessages(conversationId, messageCurrentPage + 1);
+            }
+        };
+    }
+
+    const jumpToMessagePage = () => {
+        const target = parseJumpPage(jumpInput?.value, totalPages);
+        if (target === null) {
+            showAlert(`请输入 1-${totalPages} 之间的页码`, 'error');
+            return;
+        }
+        loadConversationMessages(conversationId, target - 1);
+    };
+    if (jumpBtn) jumpBtn.onclick = jumpToMessagePage;
+    if (jumpInput) {
+        jumpInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                jumpToMessagePage();
+            }
+        });
     }
 }
 
@@ -1590,6 +1740,17 @@ function searchConversations() {
     loadConversations();
 }
 
+function jumpToConversationPage() {
+    const totalPages = Math.max(1, Math.ceil(conversationTotal / conversationPageSize) || 1);
+    const page = parseJumpPage(document.getElementById('conversationJumpPage')?.value, totalPages);
+    if (page === null) {
+        showAlert(`请输入 1-${totalPages} 之间的页码`, 'error');
+        return;
+    }
+    conversationCurrentPage = page - 1;
+    loadConversations();
+}
+
 // 更新对话分页
 function updateConversationPagination(total, hasMore) {
     conversationTotal = total;
@@ -1597,31 +1758,38 @@ function updateConversationPagination(total, hasMore) {
     const prevButton = document.getElementById('conversationPrevPage');
     const nextButton = document.getElementById('conversationNextPage');
     const pageInfo = document.getElementById('conversationPageInfo');
-    
+    const jumpInput = document.getElementById('conversationJumpPage');
+    const totalPages = Math.max(1, Math.ceil(total / conversationPageSize) || 1);
+
     if (total <= conversationPageSize) {
         paginationElement.style.display = 'none';
         return;
     }
-    
+
     paginationElement.style.display = 'block';
-    
+
     const startItem = conversationCurrentPage * conversationPageSize + 1;
     const endItem = Math.min((conversationCurrentPage + 1) * conversationPageSize, total);
-    
-    pageInfo.textContent = `第 ${startItem}-${endItem} 条，共 ${total} 条`;
-    
+
+    pageInfo.textContent = `第 ${conversationCurrentPage + 1}/${totalPages} 页 · ${startItem}-${endItem}/${total}`;
+
     prevButton.disabled = conversationCurrentPage === 0;
-    nextButton.disabled = !hasMore;
-    
+    nextButton.disabled = !hasMore && conversationCurrentPage >= totalPages - 1;
+    if (jumpInput) {
+        jumpInput.max = totalPages;
+        jumpInput.value = conversationCurrentPage + 1;
+        jumpInput.placeholder = `1-${totalPages}`;
+    }
+
     prevButton.onclick = () => {
         if (conversationCurrentPage > 0) {
             conversationCurrentPage--;
             loadConversations();
         }
     };
-    
+
     nextButton.onclick = () => {
-        if (hasMore) {
+        if (conversationCurrentPage < totalPages - 1) {
             conversationCurrentPage++;
             loadConversations();
         }

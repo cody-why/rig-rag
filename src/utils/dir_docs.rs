@@ -17,9 +17,53 @@ use crate::{
 
 const SOURCE_PREFIX: &str = "dir/";
 const MAX_CHUNK_SIZE: usize = 8192;
+const DEFAULT_HASH_PATH: &str = "data/dir_docs_hashes.json";
 
-/// 已索引文件的内容指纹（进程内），用于跳过未改动的文件
+/// 已索引文件的内容指纹（进程内 + 落盘），用于跳过未改动的文件
 static INDEXED_CONTENT_HASHES: Mutex<Option<HashMap<String, u64>>> = Mutex::new(None);
+
+fn hashes_file_path() -> PathBuf {
+    PathBuf::from(
+        std::env::var("DIR_DOCS_HASH_PATH").unwrap_or_else(|_| DEFAULT_HASH_PATH.to_string()),
+    )
+}
+
+/// 从磁盘加载指纹；值为 hex，避免 u64 JSON 精度问题
+fn load_persisted_hashes() -> HashMap<String, u64> {
+    let path = hashes_file_path();
+    let Ok(raw) = std::fs::read_to_string(&path) else {
+        return HashMap::new();
+    };
+    let Ok(map) = serde_json::from_str::<HashMap<String, String>>(&raw) else {
+        warn!(path = %path.display(), "Invalid dir docs hash file, ignore");
+        return HashMap::new();
+    };
+    map.into_iter()
+        .filter_map(|(k, hex)| u64::from_str_radix(&hex, 16).ok().map(|h| (k, h)))
+        .collect()
+}
+
+fn persist_hashes(hashes: &HashMap<String, u64>) {
+    let path = hashes_file_path();
+    if let Some(parent) = path.parent()
+        && let Err(e) = std::fs::create_dir_all(parent)
+    {
+        warn!(error = %e, "Failed to create dir for hash file");
+        return;
+    }
+    let serializable: HashMap<String, String> = hashes
+        .iter()
+        .map(|(k, v)| (k.clone(), format!("{v:016x}")))
+        .collect();
+    match serde_json::to_string_pretty(&serializable) {
+        Ok(json) => {
+            if let Err(e) = std::fs::write(&path, json) {
+                warn!(path = %path.display(), error = %e, "Failed to persist dir docs hashes");
+            }
+        }
+        Err(e) => warn!(error = %e, "Failed to serialize dir docs hashes"),
+    }
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct DirSyncResult {
@@ -101,7 +145,14 @@ pub async fn sync_directory_documents(
     let mut total_chunks = 0usize;
     let mut changed = false;
     let mut new_hashes = HashMap::new();
-    let prev_hashes = indexed_hashes().clone().unwrap_or_default();
+    // 优先用进程内缓存；冷启动则读落盘指纹，避免重启全量重嵌
+    let prev_hashes = {
+        let mut guard = indexed_hashes();
+        if guard.is_none() {
+            *guard = Some(load_persisted_hashes());
+        }
+        guard.clone().unwrap_or_default()
+    };
 
     for abs_path in &md_files {
         let rel = abs_path
@@ -196,7 +247,8 @@ pub async fn sync_directory_documents(
         info!(removed, "Removed stale directory documents from index");
     }
 
-    *indexed_hashes() = Some(new_hashes);
+    *indexed_hashes() = Some(new_hashes.clone());
+    persist_hashes(&new_hashes);
 
     info!(
         files = md_files.len(),
@@ -282,7 +334,9 @@ async fn cleanup_stale_dir_docs(
     let mut stale_base_ids = HashSet::new();
     let mut offset = 0usize;
     loop {
-        let (docs, total) = document_store.list_documents_paginated(200, offset).await?;
+        let (docs, total) = document_store
+            .list_documents_paginated(200, offset, None)
+            .await?;
         if docs.is_empty() {
             break;
         }

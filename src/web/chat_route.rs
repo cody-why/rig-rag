@@ -1,8 +1,8 @@
-use std::sync::Arc;
+use std::{net::SocketAddr, sync::Arc};
 
 use axum::{
     Router,
-    extract::{Json, Path, State},
+    extract::{ConnectInfo, Json, Path, State},
     http::{HeaderMap, HeaderValue, header},
     response::{
         IntoResponse, Response,
@@ -22,7 +22,10 @@ use tracing::{error, info};
 
 use crate::{
     agent::RigAgent,
-    db::{ConversationStore, CreateMessageRequest, DocumentStore, MessageRole},
+    db::{
+        ConversationStore, CreateMessageRequest, DocumentStore, MessageRole,
+        UpdateConversationRequest,
+    },
     web::chat_store,
 };
 
@@ -36,6 +39,8 @@ const MAX_HISTORY_MESSAGES: usize = 10; // 历史记录最大条数
 pub struct ChatRequest {
     message: String,
     user_id: Option<String>,
+    /// 来源页面 URL（嵌入站点），可选；缺省时回退 Referer / Origin
+    source: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -172,12 +177,66 @@ async fn auto_compress_history(
     }
 }
 
-/// 保存消息到数据库
+/// 解析客户端 IP：优先 X-Forwarded-For / X-Real-IP，否则用直连地址
+fn client_ip(headers: &HeaderMap, addr: SocketAddr) -> String {
+    if let Some(xff) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok())
+        && let Some(first) = xff.split(',').next()
+    {
+        let ip = first.trim();
+        if !ip.is_empty() {
+            return ip.to_string();
+        }
+    }
+    if let Some(real) = headers.get("x-real-ip").and_then(|v| v.to_str().ok()) {
+        let ip = real.trim();
+        if !ip.is_empty() {
+            return ip.to_string();
+        }
+    }
+    addr.ip().to_string()
+}
+
+/// 解析聊天来源：请求体 source > Referer > Origin
+fn resolve_chat_source(headers: &HeaderMap, payload_source: Option<&str>) -> String {
+    let from_payload = payload_source
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+    if let Some(s) = from_payload {
+        return truncate_source(s);
+    }
+    if let Some(referer) = headers.get(header::REFERER).and_then(|v| v.to_str().ok()) {
+        let s = referer.trim();
+        if !s.is_empty() {
+            return truncate_source(s.to_string());
+        }
+    }
+    if let Some(origin) = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()) {
+        let s = origin.trim();
+        if !s.is_empty() {
+            return truncate_source(s.to_string());
+        }
+    }
+    String::new()
+}
+
+fn truncate_source(s: String) -> String {
+    const MAX: usize = 500;
+    if s.chars().count() <= MAX {
+        s
+    } else {
+        s.chars().take(MAX).collect()
+    }
+}
+
+/// 保存消息到数据库（含客户端 IP / 来源）
 async fn save_messages_to_db(
     conversation_store: &Arc<ConversationStore>,
     user_id: &str,
     user_message: &str,
     assistant_response: &str,
+    client_ip: &str,
+    source: &str,
 ) {
     let conversation = match conversation_store
         .get_or_create_active_conversation(user_id)
@@ -190,12 +249,56 @@ async fn save_messages_to_db(
         }
     };
 
+    // 会话级记录最新 client_ip / source，便于后台列表展示
+    let mut conv_meta = conversation
+        .metadata
+        .clone()
+        .unwrap_or_else(|| serde_json::json!({}));
+    if let Some(obj) = conv_meta.as_object_mut() {
+        obj.insert(
+            "client_ip".to_string(),
+            serde_json::Value::String(client_ip.to_string()),
+        );
+        if !source.is_empty() {
+            obj.insert(
+                "source".to_string(),
+                serde_json::Value::String(source.to_string()),
+            );
+        }
+    }
+    if let Err(e) = conversation_store
+        .update_conversation(
+            &conversation.id,
+            UpdateConversationRequest {
+                status: None,
+                title: None,
+                metadata: Some(conv_meta),
+            },
+        )
+        .await
+    {
+        error!("Failed to update conversation metadata: {}", e);
+    }
+
+    let mut meta_map = serde_json::Map::new();
+    meta_map.insert(
+        "client_ip".to_string(),
+        serde_json::Value::String(client_ip.to_string()),
+    );
+    if !source.is_empty() {
+        meta_map.insert(
+            "source".to_string(),
+            serde_json::Value::String(source.to_string()),
+        );
+    }
+    let msg_meta = Some(serde_json::Value::Object(meta_map));
+
     // 保存用户消息到数据库
     let user_message_req = CreateMessageRequest {
         conversation_id: conversation.id.clone(),
         role: MessageRole::User,
         content: user_message.to_string(),
-        metadata: None,
+        metadata: msg_meta.clone(),
     };
 
     if let Err(e) = conversation_store.add_message(user_message_req).await {
@@ -214,7 +317,7 @@ async fn save_messages_to_db(
         conversation_id: conversation.id.clone(),
         role: MessageRole::Assistant,
         content: assistant_response.to_string(),
-        metadata: None,
+        metadata: msg_meta,
     };
 
     if let Err(e) = conversation_store.add_message(assistant_message_req).await {
@@ -224,13 +327,23 @@ async fn save_messages_to_db(
 
 pub async fn handle_chat(
     State((agent, _, conversation_store)): State<ChatAppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(payload): Json<ChatRequest>,
 ) -> Json<ChatResponse> {
     // 从请求中获取用户 ID 或生成一个新的
     let user_id = payload.user_id.unwrap_or_else(generate_user_id);
     let message = payload.message.trim();
+    let client_ip = client_ip(&headers, addr);
+    let source = resolve_chat_source(&headers, payload.source.as_deref());
 
-    info!("Received chat request from user {}: {}", user_id, message);
+    info!(
+        user_id = %user_id,
+        client_ip = %client_ip,
+        source = %source,
+        "Received chat request: {}",
+        message
+    );
 
     // 从内存缓存获取或初始化聊天历史
     let chat_history = if let Some(h) = chat_store().get(&user_id) {
@@ -259,7 +372,15 @@ pub async fn handle_chat(
             }
 
             // 保存消息到数据库
-            save_messages_to_db(&conversation_store, &user_id, message, &response).await;
+            save_messages_to_db(
+                &conversation_store,
+                &user_id,
+                message,
+                &response,
+                &client_ip,
+                &source,
+            )
+            .await;
 
             info!("Chat response for user {}: {}", user_id, response);
             response
@@ -276,16 +397,23 @@ pub async fn handle_chat(
 /// 流式聊天处理器
 pub async fn handle_stream_chat(
     State((agent, _, conversation_store)): State<ChatAppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(payload): Json<ChatRequest>,
 ) -> Response {
     // 从请求中获取用户 ID 或生成一个新的
     let no_id = payload.user_id.is_none();
     let user_id = payload.user_id.unwrap_or_else(generate_user_id);
     let message = payload.message.trim().to_string();
+    let client_ip = client_ip(&headers, addr);
+    let source = resolve_chat_source(&headers, payload.source.as_deref());
 
     info!(
-        "Received stream chat request from user {}: {}",
-        user_id, message
+        user_id = %user_id,
+        client_ip = %client_ip,
+        source = %source,
+        "Received stream chat request: {}",
+        message
     );
 
     // 从内存缓存获取或初始化聊天历史
@@ -307,6 +435,8 @@ pub async fn handle_stream_chat(
     // 在后台任务中处理流
     let user_id_clone = user_id.clone();
     let message_clone = message.clone();
+    let client_ip_clone = client_ip.clone();
+    let source_clone = source.clone();
     let chat_history_clone = chat_history.clone();
     let conversation_store_clone = conversation_store.clone();
     let agent_clone = agent.clone();
@@ -374,6 +504,8 @@ pub async fn handle_stream_chat(
                     &user_id_clone,
                     &message_clone,
                     &full_response,
+                    &client_ip_clone,
+                    &source_clone,
                 )
                 .await;
             }

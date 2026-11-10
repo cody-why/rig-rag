@@ -46,6 +46,16 @@ pub struct ConversationHistoryResponse {
     pub messages: Vec<ConversationMessage>,
 }
 
+/// 分页消息响应
+#[derive(Debug, Serialize)]
+pub struct ConversationMessagesPage {
+    pub messages: Vec<ConversationMessage>,
+    pub total: i64,
+    pub limit: i64,
+    pub offset: i64,
+    pub has_more: bool,
+}
+
 /// 用户对话列表响应
 #[derive(Debug, Serialize)]
 pub struct UserConversationsResponse {
@@ -224,20 +234,55 @@ pub async fn delete_conversation(
     }
 }
 
-/// 获取对话消息
+/// 获取对话消息（分页）
 pub async fn get_conversation_messages(
     State((_, _, conversation_store)): State<AppState>,
     Path(conversation_id): Path<String>,
     Query(pagination): Query<PaginationQuery>,
-) -> ResponseJson<Vec<ConversationMessage>> {
-    match conversation_store
-        .get_conversation_messages(&conversation_id, pagination.limit, pagination.offset)
+) -> ResponseJson<ConversationMessagesPage> {
+    let limit = pagination.limit.unwrap_or(20).clamp(1, 100);
+    let offset = pagination.offset.unwrap_or(0).max(0);
+
+    let total = match conversation_store
+        .count_conversation_messages(&conversation_id)
         .await
     {
-        Ok(messages) => ResponseJson(messages),
+        Ok(n) => n,
+        Err(e) => {
+            error!("Failed to count conversation messages: {}", e);
+            return ResponseJson(ConversationMessagesPage {
+                messages: Vec::new(),
+                total: 0,
+                limit,
+                offset,
+                has_more: false,
+            });
+        }
+    };
+
+    match conversation_store
+        .get_conversation_messages(&conversation_id, Some(limit), Some(offset))
+        .await
+    {
+        Ok(messages) => {
+            let has_more = offset + (messages.len() as i64) < total;
+            ResponseJson(ConversationMessagesPage {
+                messages,
+                total,
+                limit,
+                offset,
+                has_more,
+            })
+        }
         Err(e) => {
             error!("Failed to get conversation messages: {}", e);
-            ResponseJson(Vec::new())
+            ResponseJson(ConversationMessagesPage {
+                messages: Vec::new(),
+                total,
+                limit,
+                offset,
+                has_more: false,
+            })
         }
     }
 }
@@ -324,15 +369,32 @@ pub async fn get_all_conversations(
     Query(pagination): Query<AdminPaginationQuery>,
 ) -> ResponseJson<UserConversationsResponse> {
     let search_param = pagination.search.as_deref();
+    let limit = pagination.limit.unwrap_or(20).clamp(1, 100);
+    let offset = pagination.offset.unwrap_or(0).max(0);
+
+    let total = match conversation_store
+        .count_all_conversations(search_param)
+        .await
+    {
+        Ok(n) => n,
+        Err(e) => {
+            error!("Failed to count conversations: {}", e);
+            return ResponseJson(UserConversationsResponse {
+                total: 0,
+                conversations: Vec::new(),
+                has_more: false,
+            });
+        }
+    };
 
     match conversation_store
-        .get_all_conversations(pagination.limit, pagination.offset, search_param)
+        .get_all_conversations(Some(limit), Some(offset), search_param)
         .await
     {
         Ok(conversations) => {
-            let has_more = conversations.len() as i64 == pagination.limit.unwrap_or(20);
+            let has_more = offset + (conversations.len() as i64) < total;
             ResponseJson(UserConversationsResponse {
-                total: conversations.len() as i64, // 简化实现
+                total,
                 conversations,
                 has_more,
             })

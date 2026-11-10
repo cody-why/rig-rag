@@ -785,7 +785,8 @@ class RigChat {
                 },
                 body: JSON.stringify({ 
                     message,
-                    user_id: userId
+                    user_id: userId,
+                    source: typeof window !== 'undefined' ? window.location.href : ''
                 }),
             });
             

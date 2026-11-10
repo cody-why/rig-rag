@@ -57,6 +57,9 @@ pub struct Conversation {
     pub metadata: Option<serde_json::Value>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// 首条用户问题（列表接口填充，其它查询可为 None）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_question: Option<String>,
 }
 
 /// 对话消息模型
@@ -112,6 +115,7 @@ impl sqlx::FromRow<'_, SqliteRow> for Conversation {
                 .and_then(|s: String| serde_json::from_str(&s).ok()),
             created_at,
             updated_at,
+            first_question: row.try_get("first_question").ok().flatten(),
         })
     }
 }
@@ -320,6 +324,7 @@ impl ConversationStore {
             metadata: req.metadata,
             created_at: now,
             updated_at: now,
+            first_question: None,
         })
     }
 
@@ -413,6 +418,21 @@ impl ConversationStore {
         })
     }
 
+    /// 获取对话消息总数
+    pub async fn count_conversation_messages(&self, conversation_id: &str) -> Result<i64> {
+        let count: i64 = sqlx::query_scalar(
+            r#"
+            SELECT COUNT(*) FROM conversation_messages
+            WHERE conversation_id = ?
+            "#,
+        )
+        .bind(conversation_id)
+        .fetch_one(&self.pool)
+        .await
+        .context("Failed to count conversation messages")?;
+        Ok(count)
+    }
+
     /// 获取对话消息历史
     pub async fn get_conversation_messages(
         &self,
@@ -420,7 +440,7 @@ impl ConversationStore {
         limit: Option<i64>,
         offset: Option<i64>,
     ) -> Result<Vec<ConversationMessage>> {
-        let limit = limit.unwrap_or(50);
+        let limit = limit.unwrap_or(20);
         let offset = offset.unwrap_or(0);
 
         let messages = sqlx::query_as::<_, ConversationMessage>(
@@ -732,17 +752,30 @@ impl ConversationStore {
             return Ok(false);
         }
 
-        // 直接关闭对话
+        // 合并关闭标记到已有 metadata，避免覆盖 client_ip 等字段
+        let mut metadata = self
+            .get_conversation_by_id(conversation_id)
+            .await?
+            .and_then(|c| c.metadata)
+            .unwrap_or_else(|| serde_json::json!({}));
+        if let Some(obj) = metadata.as_object_mut() {
+            obj.insert(
+                "auto_closed_reason".to_string(),
+                serde_json::Value::String("user_indicated_end".to_string()),
+            );
+            obj.insert(
+                "closed_at".to_string(),
+                serde_json::Value::String(Utc::now().to_rfc3339()),
+            );
+        }
+
         let _ = self
             .update_conversation(
                 conversation_id,
                 crate::db::UpdateConversationRequest {
                     status: Some(ConversationStatus::Closed),
                     title: None,
-                    metadata: Some(serde_json::json!({
-                        "auto_closed_reason": "user_indicated_end",
-                        "closed_at": Utc::now().to_rfc3339()
-                    })),
+                    metadata: Some(metadata),
                 },
             )
             .await;
@@ -802,7 +835,49 @@ impl ConversationStore {
         })
     }
 
-    /// 获取所有对话（管理员功能）
+    /// 转义 LIKE 通配符，避免用户输入 `%` `_` 扩大匹配范围
+    fn like_pattern(search_term: &str) -> String {
+        let escaped = search_term
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        format!("%{escaped}%")
+    }
+
+    /// 统计全部对话数（管理员：按消息内容 / 来源 / IP / 用户ID）
+    pub async fn count_all_conversations(&self, search: Option<&str>) -> Result<i64> {
+        let count = if let Some(search_term) = search.filter(|s| !s.trim().is_empty()) {
+            let pattern = Self::like_pattern(search_term.trim());
+            sqlx::query_scalar::<_, i64>(
+                r#"
+                SELECT COUNT(DISTINCT c.id)
+                FROM conversations c
+                LEFT JOIN conversation_messages m ON m.conversation_id = c.id
+                WHERE m.content LIKE ? ESCAPE '\'
+                   OR IFNULL(c.metadata, '') LIKE ? ESCAPE '\'
+                   OR IFNULL(m.metadata, '') LIKE ? ESCAPE '\'
+                   OR c.user_id LIKE ? ESCAPE '\'
+                   OR IFNULL(c.title, '') LIKE ? ESCAPE '\'
+                "#,
+            )
+            .bind(&pattern)
+            .bind(&pattern)
+            .bind(&pattern)
+            .bind(&pattern)
+            .bind(&pattern)
+            .fetch_one(&self.pool)
+            .await
+            .context("Failed to count conversations with search")?
+        } else {
+            sqlx::query_scalar::<_, i64>(r#"SELECT COUNT(*) FROM conversations"#)
+                .fetch_one(&self.pool)
+                .await
+                .context("Failed to count conversations")?
+        };
+        Ok(count)
+    }
+
+    /// 获取所有对话（管理员：可按消息内容 / 来源 / IP / 用户ID 搜索）
     pub async fn get_all_conversations(
         &self,
         limit: Option<i64>,
@@ -812,37 +887,58 @@ impl ConversationStore {
         let limit = limit.unwrap_or(20);
         let offset = offset.unwrap_or(0);
 
-        let conversations = if let Some(search_term) = search {
-            sqlx::query_as::<_, Conversation>(
+        // 子查询取首条用户消息作为列表展示
+        const FIRST_Q: &str = r#"
+            (SELECT m0.content FROM conversation_messages m0
+             WHERE m0.conversation_id = c.id AND m0.role = 'user'
+             ORDER BY m0.created_at ASC LIMIT 1) AS first_question
+        "#;
+
+        let conversations = if let Some(search_term) = search.filter(|s| !s.trim().is_empty()) {
+            let pattern = Self::like_pattern(search_term.trim());
+            let sql = format!(
                 r#"
-                SELECT id, user_id, status, title, metadata, created_at, updated_at
-                FROM conversations
-                WHERE user_id LIKE ? OR id LIKE ?
-                ORDER BY updated_at DESC, created_at DESC
+                SELECT c.id, c.user_id, c.status, c.title, c.metadata, c.created_at, c.updated_at,
+                       {FIRST_Q}
+                FROM conversations c
+                LEFT JOIN conversation_messages m ON m.conversation_id = c.id
+                WHERE m.content LIKE ? ESCAPE '\'
+                   OR IFNULL(c.metadata, '') LIKE ? ESCAPE '\'
+                   OR IFNULL(m.metadata, '') LIKE ? ESCAPE '\'
+                   OR c.user_id LIKE ? ESCAPE '\'
+                   OR IFNULL(c.title, '') LIKE ? ESCAPE '\'
+                GROUP BY c.id
+                ORDER BY c.updated_at DESC, c.created_at DESC
                 LIMIT ? OFFSET ?
-                "#,
-            )
-            .bind(format!("%{}%", search_term))
-            .bind(format!("%{}%", search_term))
-            .bind(limit)
-            .bind(offset)
-            .fetch_all(&self.pool)
-            .await
-            .context("Failed to query conversations with search")?
+                "#
+            );
+            sqlx::query_as::<_, Conversation>(&sql)
+                .bind(&pattern)
+                .bind(&pattern)
+                .bind(&pattern)
+                .bind(&pattern)
+                .bind(&pattern)
+                .bind(limit)
+                .bind(offset)
+                .fetch_all(&self.pool)
+                .await
+                .context("Failed to query conversations with search")?
         } else {
-            sqlx::query_as::<_, Conversation>(
+            let sql = format!(
                 r#"
-                SELECT id, user_id, status, title, metadata, created_at, updated_at
-                FROM conversations
-                ORDER BY updated_at DESC, created_at DESC
+                SELECT c.id, c.user_id, c.status, c.title, c.metadata, c.created_at, c.updated_at,
+                       {FIRST_Q}
+                FROM conversations c
+                ORDER BY c.updated_at DESC, c.created_at DESC
                 LIMIT ? OFFSET ?
-                "#,
-            )
-            .bind(limit)
-            .bind(offset)
-            .fetch_all(&self.pool)
-            .await
-            .context("Failed to query conversations")?
+                "#
+            );
+            sqlx::query_as::<_, Conversation>(&sql)
+                .bind(limit)
+                .bind(offset)
+                .fetch_all(&self.pool)
+                .await
+                .context("Failed to query conversations")?
         };
 
         Ok(conversations)

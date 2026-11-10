@@ -68,6 +68,8 @@ pub struct DocumentListItem {
 struct PaginationQuery {
     limit: Option<usize>,
     offset: Option<usize>,
+    /// 按标题(文件名) / 内容搜索
+    search: Option<String>,
 }
 
 impl From<Document> for DocumentResponse {
@@ -107,7 +109,11 @@ async fn list_documents(
 ) -> Result<ResponseJson<DocumentListResponse>, StatusCode> {
     let limit = p.limit.unwrap_or(20).clamp(1, 1000);
     let offset = p.offset.unwrap_or(0);
-    match document_store.list_documents_paginated(limit, offset).await {
+    let search = p.search.as_deref();
+    match document_store
+        .list_documents_paginated(limit, offset, search)
+        .await
+    {
         Ok((docs, total)) => {
             let documents = docs
                 .into_iter()

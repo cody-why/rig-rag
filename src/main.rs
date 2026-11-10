@@ -53,21 +53,25 @@ async fn main() {
         )
         .await
         {
-            Ok(result) => info!(
-                dir = %config.documents_dir,
-                files = result.files,
-                chunks = result.chunks,
-                changed = result.changed,
-                "Synced DOCUMENTS_DIR markdown into vector store"
-            ),
+            Ok(result) => {
+                info!(
+                    dir = %config.documents_dir,
+                    files = result.files,
+                    chunks = result.chunks,
+                    changed = result.changed,
+                    "Synced DOCUMENTS_DIR markdown into vector store"
+                );
+                // 仅内容有变更时才重建；重启未改文件不触发重嵌/重建
+                if result.changed {
+                    agent.set_needs_rebuild(true).await;
+                }
+            }
             Err(e) => tracing::warn!(
                 dir = %config.documents_dir,
                 "Failed to sync DOCUMENTS_DIR: {}",
                 e
             ),
         }
-        // 目录文档变更后需要重建 agent 索引视图
-        agent.set_needs_rebuild(true).await;
     }
 
     let agent = Arc::new(agent);

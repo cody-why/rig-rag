@@ -340,23 +340,12 @@ impl DocumentStore {
         Ok(None)
     }
 
-    pub async fn list_documents_paginated(
+    async fn query_documents_page(
         &self,
+        client: &Qdrant,
         limit: usize,
         offset: usize,
-    ) -> Result<(Vec<Document>, usize)> {
-        let client = self.client()?;
-        if !self.collection_exists(&client).await? {
-            return Ok((Vec::new(), 0));
-        }
-
-        let total = self.collection_count(&client).await?;
-        if total == 0 {
-            return Ok((Vec::new(), 0));
-        }
-
-        let safe_limit = limit.clamp(1, 1000);
-
+    ) -> Result<Vec<Document>> {
         let order_by = OrderByBuilder::new("updated_at")
             .direction(Direction::Desc as i32)
             .build();
@@ -366,7 +355,7 @@ impl DocumentStore {
                 QueryPointsBuilder::new(&self.config.collection_name)
                     .query(Query::new_order_by(order_by))
                     .offset(offset as u64)
-                    .limit(safe_limit as u64)
+                    .limit(limit as u64)
                     .with_payload(true)
                     .with_vectors(false)
                     .build(),
@@ -374,7 +363,7 @@ impl DocumentStore {
             .await
             .context("Failed to query documents from Qdrant")?;
 
-        let documents = response
+        Ok(response
             .result
             .into_iter()
             .filter_map(|point| match Self::deserialize_document(point.payload) {
@@ -384,8 +373,78 @@ impl DocumentStore {
                     None
                 }
             })
-            .collect();
+            .collect())
+    }
 
+    /// 列表文档；`search` 按标题(source) / 内容子串匹配（不区分大小写）
+    pub async fn list_documents_paginated(
+        &self,
+        limit: usize,
+        offset: usize,
+        search: Option<&str>,
+    ) -> Result<(Vec<Document>, usize)> {
+        let client = self.client()?;
+        if !self.collection_exists(&client).await? {
+            return Ok((Vec::new(), 0));
+        }
+
+        let total_all = self.collection_count(&client).await?;
+        if total_all == 0 {
+            return Ok((Vec::new(), 0));
+        }
+
+        let safe_limit = limit.clamp(1, 1000);
+        let needle = search
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_lowercase());
+
+        // 无搜索：直接分页
+        let Some(needle) = needle else {
+            let documents = self
+                .query_documents_page(&client, safe_limit, offset)
+                .await?;
+            return Ok((documents, total_all));
+        };
+
+        // 有搜索：扫描后过滤再分页（管理后台规模可接受）
+        const BATCH: usize = 200;
+        const MAX_SCAN: usize = 20_000;
+        let mut matched = Vec::new();
+        let mut scan_offset = 0usize;
+
+        while scan_offset < total_all && scan_offset < MAX_SCAN {
+            let batch = self
+                .query_documents_page(&client, BATCH, scan_offset)
+                .await?;
+            if batch.is_empty() {
+                break;
+            }
+            let batch_len = batch.len();
+            for doc in batch {
+                let title_hit = doc.source.to_lowercase().contains(&needle);
+                let content_hit = doc.content.to_lowercase().contains(&needle);
+                if title_hit || content_hit {
+                    matched.push(doc);
+                }
+            }
+            scan_offset += batch_len;
+            if batch_len < BATCH {
+                break;
+            }
+        }
+
+        if total_all > MAX_SCAN {
+            warn!(
+                total = total_all,
+                max_scan = MAX_SCAN,
+                "Document search scanned only first {} points",
+                MAX_SCAN
+            );
+        }
+
+        let total = matched.len();
+        let documents = matched.into_iter().skip(offset).take(safe_limit).collect();
         Ok((documents, total))
     }
 
